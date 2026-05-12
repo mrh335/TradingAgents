@@ -1,19 +1,23 @@
-"""GUI configuration: API keys + run defaults + Ollama model discovery."""
+"""GUI configuration: API keys + run defaults + Ollama model discovery
++ sibling-service integrations (e.g. financial planner URL/key)."""
 
 from __future__ import annotations
 
 import os
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import requests
 from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel
 
 from gui.config import (
     GUI_CONFIG_PATH,
     PROVIDER_KEYS,
     PROVIDER_LABELS,
     load,
+    load_integration,
     save,
+    set_integration,
 )
 from service.schemas import ProviderKey, SettingsResponse, SettingsUpdateRequest
 
@@ -126,4 +130,86 @@ def update_settings(req: SettingsUpdateRequest) -> SettingsResponse:
         api_keys=_provider_keys_view(cfg.get("api_keys", {})),
         defaults=cfg.get("defaults", {}),
         config_path=str(GUI_CONFIG_PATH),
+    )
+
+
+# ── Sibling integrations (financial planner etc.) ───────────────────────
+#
+# Stored URL/key per named integration. Env vars (PLANNER_API_URL,
+# PLANNER_API_KEY) still take precedence at request time — these endpoints
+# only manage the GUI-config fallback. ``set_in_env`` in the response
+# tells the UI to display the field as read-only when the env var wins.
+
+_PLANNER_URL_ENV = "PLANNER_API_URL"
+_PLANNER_KEY_ENV = "PLANNER_API_KEY"
+
+
+def _mask_key(value: str) -> str:
+    """Show only the last 4 chars so the user can verify which key is
+    stored without re-reading the full secret on every page load."""
+    if not value:
+        return ""
+    tail = value[-4:] if len(value) >= 4 else value
+    return f"…{tail}"
+
+
+class IntegrationView(BaseModel):
+    name: str
+    url: str
+    masked_key: str
+    url_set_in_env: bool
+    key_set_in_env: bool
+
+
+class IntegrationUpdateRequest(BaseModel):
+    url: Optional[str] = None
+    key: Optional[str] = None
+
+
+class PlannerProbeResult(BaseModel):
+    ok: bool
+    status_code: Optional[int] = None
+    error: Optional[str] = None
+
+
+@router.get("/integrations/planner", response_model=IntegrationView)
+def get_planner_integration() -> IntegrationView:
+    """Returns the planner integration config the GUI uses for its
+    Settings page. The full key is never returned — only a masked tail
+    so the user can verify what's stored."""
+    stored = load_integration("planner")
+    return IntegrationView(
+        name="planner",
+        url=stored["url"],
+        masked_key=_mask_key(stored["key"]),
+        url_set_in_env=bool(os.environ.get(_PLANNER_URL_ENV)),
+        key_set_in_env=bool(os.environ.get(_PLANNER_KEY_ENV)),
+    )
+
+
+@router.put("/integrations/planner", response_model=IntegrationView)
+def update_planner_integration(req: IntegrationUpdateRequest) -> IntegrationView:
+    """Update the planner URL and/or key in the GUI config. None values
+    leave the existing field as-is; empty strings explicitly clear."""
+    set_integration("planner", url=req.url, key=req.key)
+    return get_planner_integration()
+
+
+@router.post("/integrations/planner/test", response_model=PlannerProbeResult)
+def test_planner_integration() -> PlannerProbeResult:
+    """Hit /api/health on the configured planner with the stored auth
+    header to confirm URL + key are correct. Doesn't sync anything —
+    just a connectivity probe so the user gets immediate feedback after
+    saving the config."""
+    from service import planner_client
+    if not planner_client.is_configured():
+        return PlannerProbeResult(
+            ok=False,
+            error="No URL or key configured. Set both in the form above.",
+        )
+    result = planner_client.healthcheck()
+    return PlannerProbeResult(
+        ok=bool(result.get("ok")),
+        status_code=result.get("status_code"),
+        error=result.get("error") or (result.get("body") if not result.get("ok") else None),
     )

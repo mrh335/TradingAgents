@@ -27,13 +27,34 @@ READ_TIMEOUT = 30.0
 
 
 def planner_url() -> Optional[str]:
+    """URL of the planner instance. Env var wins; falls back to the
+    Settings-page value stored in ~/.tradingagents/gui_config.json so
+    the user can configure this from the GUI without editing .env."""
     raw = (os.environ.get("PLANNER_API_URL") or "").strip().rstrip("/")
-    return raw or None
+    if raw:
+        return raw
+    try:
+        from gui.config import load_integration
+        stored = load_integration("planner")
+        url = (stored.get("url") or "").strip().rstrip("/")
+        return url or None
+    except Exception:
+        return None
 
 
 def planner_key() -> Optional[str]:
+    """Bearer / X-API-Key value to send to the planner. Env var wins;
+    falls back to the Settings-page value (see planner_url() docstring)."""
     raw = (os.environ.get("PLANNER_API_KEY") or "").strip()
-    return raw or None
+    if raw:
+        return raw
+    try:
+        from gui.config import load_integration
+        stored = load_integration("planner")
+        key = (stored.get("key") or "").strip()
+        return key or None
+    except Exception:
+        return None
 
 
 def is_configured() -> bool:

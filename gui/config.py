@@ -75,7 +75,42 @@ def _empty_config() -> Dict[str, Any]:
         # Ollama running elsewhere on your LAN.
         "ollama_base_url": "",
     }
-    return {"api_keys": {}, "defaults": defaults, "ui": {}}
+    # Sibling-service integrations. ``planner`` lets the Settings page
+    # store the financial-planner URL + key in the GUI config so the
+    # user doesn't need to edit .env and restart. ``planner_client.py``
+    # checks env vars first, then falls back to these values.
+    integrations = {
+        "planner": {
+            "url": "",
+            "key": "",
+        },
+    }
+    return {"api_keys": {}, "defaults": defaults, "ui": {}, "integrations": integrations}
+
+
+def load_integration(name: str) -> Dict[str, str]:
+    """Return the stored config for the named sibling integration. Empty
+    strings mean "not configured" — the consumer (e.g. planner_client.py)
+    should treat them the same as missing env vars."""
+    cfg = load()
+    integ = (cfg.get("integrations") or {}).get(name) or {}
+    return {
+        "url": str(integ.get("url") or ""),
+        "key": str(integ.get("key") or ""),
+    }
+
+
+def set_integration(name: str, url: str | None = None, key: str | None = None) -> Dict[str, str]:
+    """Update one or both fields of the named integration's stored config.
+    None means "leave as-is"; empty string explicitly clears the field."""
+    cfg = load()
+    cfg.setdefault("integrations", {}).setdefault(name, {"url": "", "key": ""})
+    if url is not None:
+        cfg["integrations"][name]["url"] = url.strip()
+    if key is not None:
+        cfg["integrations"][name]["key"] = key.strip()
+    save(cfg)
+    return load_integration(name)
 
 
 def load() -> Dict[str, Any]:
@@ -92,6 +127,11 @@ def load() -> Dict[str, Any]:
     base["api_keys"].update(data.get("api_keys", {}))
     base["defaults"].update(data.get("defaults", {}))
     base["ui"].update(data.get("ui", {}))
+    # Merge stored integrations on top of the empty-config skeleton so a
+    # config file written before "integrations" existed still loads with
+    # the planner skeleton present (no KeyError on first read).
+    for name, stored in (data.get("integrations") or {}).items():
+        base["integrations"].setdefault(name, {"url": "", "key": ""}).update(stored or {})
     return base
 
 

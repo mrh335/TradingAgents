@@ -127,6 +127,30 @@ export const SettingsApi = {
       count: number;
     }>(`/settings/ollama/models${qs}`);
   },
+  // ── Financial planner integration ──────────────────────────────────
+  // Stored URL + key for the sibling planner. Env vars (PLANNER_API_URL,
+  // PLANNER_API_KEY) take precedence — the *_set_in_env flags in the
+  // response tell the UI to disable the corresponding input.
+  getPlannerIntegration: () => request<{
+    name: string;
+    url: string;
+    masked_key: string;
+    url_set_in_env: boolean;
+    key_set_in_env: boolean;
+  }>("/settings/integrations/planner"),
+  updatePlannerIntegration: (req: { url?: string; key?: string }) =>
+    request<{
+      name: string;
+      url: string;
+      masked_key: string;
+      url_set_in_env: boolean;
+      key_set_in_env: boolean;
+    }>("/settings/integrations/planner", { method: "PUT", body: JSON.stringify(req) }),
+  testPlannerIntegration: () =>
+    request<{ ok: boolean; status_code?: number; error?: string }>(
+      "/settings/integrations/planner/test",
+      { method: "POST" },
+    ),
 };
 
 // ---- Memory -------------------------------------------------------------

@@ -112,6 +112,8 @@ export default function SettingsPage() {
         </div>
       </section>
 
+      <PlannerIntegrationSection />
+
       <section>
         <h2 className="text-lg font-semibold mb-2">Default run configuration</h2>
         <p className="text-xs text-muted mb-3">
@@ -165,5 +167,143 @@ function NumberField({
         onChange={(e) => setDefaults({ ...defaults, [name]: Number(e.target.value) })}
       />
     </div>
+  );
+}
+
+// Settings card for the financial-planner sibling integration. Lets the
+// user set the planner URL + API key from the GUI instead of editing
+// .env. Env vars (PLANNER_API_URL / PLANNER_API_KEY) still take precedence
+// — when one is set the corresponding input is disabled and labeled "env".
+// "Test connection" hits /api/health on the planner with the stored auth
+// header so the user gets immediate feedback after saving.
+function PlannerIntegrationSection() {
+  const qc = useQueryClient();
+  const q = useQuery({
+    queryKey: ["planner-integration"],
+    queryFn: () => SettingsApi.getPlannerIntegration(),
+  });
+
+  const [url, setUrl] = useState<string>("");
+  const [key, setKey] = useState<string>("");
+  const [dirty, setDirty] = useState(false);
+  const [testResult, setTestResult] = useState<{ ok: boolean; msg: string } | null>(null);
+
+  useEffect(() => {
+    if (q.data) {
+      setUrl(q.data.url);
+      setKey(""); // never pre-fill the key — only show masked
+      setDirty(false);
+    }
+  }, [q.data]);
+
+  const save = useMutation({
+    mutationFn: () =>
+      SettingsApi.updatePlannerIntegration({
+        // Only send fields the user actually edited. Empty string = clear.
+        url: q.data?.url_set_in_env ? undefined : url,
+        key: q.data?.key_set_in_env ? undefined : (dirty ? key : undefined),
+      }),
+    onSuccess: () => {
+      setKey("");
+      setDirty(false);
+      setTestResult(null);
+      qc.invalidateQueries({ queryKey: ["planner-integration"] });
+    },
+  });
+
+  const test = useMutation({
+    mutationFn: () => SettingsApi.testPlannerIntegration(),
+    onSuccess: (res) => {
+      setTestResult({
+        ok: res.ok,
+        msg: res.ok
+          ? "✓ planner reachable, auth accepted"
+          : `failed: ${res.error || `HTTP ${res.status_code}`}`,
+      });
+    },
+  });
+
+  const data = q.data;
+  return (
+    <section>
+      <h2 className="text-lg font-semibold mb-2">Financial Planner integration</h2>
+      <p className="text-xs text-muted mb-3">
+        Pull holdings from a sibling Financial Planner instance into the local positions table.
+        See <code>INTEGRATION.md</code>. Set the URL and an API key matching{" "}
+        <code>INTEGRATION_API_KEY</code> on the planner side (generate one from the planner's
+        Settings page). Env vars <code>PLANNER_API_URL</code> /{" "}
+        <code>PLANNER_API_KEY</code> override these when set.
+      </p>
+      <div className="card space-y-3">
+        <div>
+          <label className="label">Planner URL</label>
+          <div className="flex items-center gap-2">
+            <input
+              type="text"
+              className="input flex-1"
+              placeholder="http://192.168.2.34:8765"
+              value={url}
+              disabled={!!data?.url_set_in_env}
+              onChange={(e) => { setUrl(e.target.value); setDirty(true); }}
+            />
+            <span
+              className={`pill ${data?.url_set_in_env ? "bg-success/15 text-success" : url ? "bg-accent/15 text-accent" : "bg-muted/15 text-muted"}`}
+            >
+              {data?.url_set_in_env ? "env" : url ? "saved" : "empty"}
+            </span>
+          </div>
+        </div>
+        <div>
+          <label className="label">API key</label>
+          <div className="flex items-center gap-2">
+            <input
+              type="password"
+              className="input flex-1"
+              placeholder={
+                data?.key_set_in_env
+                  ? "•••• (from environment)"
+                  : data?.masked_key
+                    ? `•••• (saved · ends in ${data.masked_key.replace(/^…/, "")})`
+                    : "(not set — paste from planner Settings page)"
+              }
+              disabled={!!data?.key_set_in_env}
+              value={key}
+              onChange={(e) => { setKey(e.target.value); setDirty(true); }}
+            />
+            <span
+              className={`pill ${data?.key_set_in_env ? "bg-success/15 text-success" : data?.masked_key ? "bg-accent/15 text-accent" : "bg-muted/15 text-muted"}`}
+            >
+              {data?.key_set_in_env ? "env" : data?.masked_key ? "saved" : "empty"}
+            </span>
+          </div>
+          <p className="text-[11px] text-muted mt-1">
+            Generate this key on the planner's <strong>Settings → Integration API key</strong>{" "}
+            section using the &ldquo;Generate + save&rdquo; or &ldquo;Rotate key&rdquo; button,
+            then reveal &amp; copy it here.
+          </p>
+        </div>
+        <div className="flex items-center gap-2 flex-wrap">
+          <button
+            className="btn btn-primary"
+            onClick={() => save.mutate()}
+            disabled={!dirty || save.isPending}
+          >
+            {save.isPending ? "Saving…" : "Save"}
+          </button>
+          <button
+            className="btn"
+            onClick={() => test.mutate()}
+            disabled={test.isPending}
+          >
+            {test.isPending ? "Testing…" : "Test connection"}
+          </button>
+          {testResult && (
+            <span className={`text-xs ${testResult.ok ? "text-success" : "text-danger"}`}>
+              {testResult.msg}
+            </span>
+          )}
+        </div>
+      </div>
+    </section>
   );
 }
