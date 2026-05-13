@@ -24,10 +24,17 @@ const nextConfig = {
     return config;
   },
 
-  // Proxy /api/* to the FastAPI backend in dev. In production the
-  // reverse proxy (Synology) handles routing.
+  // Proxy /api/* to the FastAPI backend.
+  //
+  // CAREFUL: Next.js evaluates rewrites at BUILD time for `output: standalone`
+  // and bakes the destination into the standalone server bundle. The runtime
+  // value of API_URL is NOT consulted. So the fallback below must be a
+  // sensible default for the most common deployment shape — compose, where
+  // the API service is reachable at `http://api:8000` via Docker DNS. If
+  // you build locally and want it to hit localhost, set API_URL=http://localhost:8000
+  // when running `npm run build` (or pass it as a build-arg to Docker).
   async rewrites() {
-    const api = process.env.API_URL || "http://localhost:8000";
+    const api = process.env.API_URL || "http://api:8000";
     return [
       { source: "/api/:path*", destination: `${api}/:path*` },
     ];
