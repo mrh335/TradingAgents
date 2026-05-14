@@ -13,6 +13,14 @@ FROM node:20-alpine AS builder
 WORKDIR /build
 COPY --from=deps /build/node_modules ./node_modules
 COPY web ./
+
+# Next.js inlines NEXT_PUBLIC_* env vars at BUILD time (not runtime). Setting
+# them only in `environment:` on docker-compose has no effect — the bundle
+# was already compiled. Take the URL as a build arg so the value baked into
+# the JS matches the public LAN address.
+ARG NEXT_PUBLIC_WS_BASE=ws://api:8000
+ENV NEXT_PUBLIC_WS_BASE=$NEXT_PUBLIC_WS_BASE
+
 RUN npm run build
 
 FROM node:20-alpine AS runner

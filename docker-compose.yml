@@ -52,10 +52,15 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.web
+      args:
+        # MUST be passed at build time — Next.js inlines NEXT_PUBLIC_* into
+        # the client JS bundle during ``npm run build``. The runtime
+        # ``environment:`` block below is too late to change it.
+        - NEXT_PUBLIC_WS_BASE=${NEXT_PUBLIC_WS_BASE:-ws://192.168.2.34:8001}
     container_name: tradingagents-web
     environment:
       - API_URL=http://api:8000
-      - NEXT_PUBLIC_WS_BASE=${NEXT_PUBLIC_WS_BASE:-ws://192.168.2.34:8000}
+      - NEXT_PUBLIC_WS_BASE=${NEXT_PUBLIC_WS_BASE:-ws://192.168.2.34:8001}
     ports:
       - "${TRADINGAGENTS_WEB_PORT:-3000}:3000"
     depends_on:
