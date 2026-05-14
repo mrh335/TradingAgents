@@ -14,6 +14,7 @@ when terminal events arrive.
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import queue
 import threading
@@ -55,7 +56,8 @@ class RunnerPool:
 
     # ---- Lifecycle ----------------------------------------------------
 
-    def start(self, *, run_id: str, job: Dict[str, Any]) -> ManagedRun:
+    def start(self, *, run_id: str, job: Dict[str, Any],
+              batch_id: Optional[str] = None) -> ManagedRun:
         cfg = load_config()
         env = export_env(cfg)
         # Inject run_id so the worker writes the right archive path.
@@ -64,8 +66,15 @@ class RunnerPool:
         handle = legacy_runner.launch(full_job, env=env)
 
         managed = ManagedRun(run_id=run_id, handle=handle)
+        managed.batch_id = batch_id  # type: ignore[attr-defined]
         with self._lock:
             self._runs[run_id] = managed
+
+        # Mark the DB row as running (it was 'queued' if part of a batch).
+        try:
+            storage.mark_run_running(run_id)
+        except Exception:
+            pass
 
         # Background reader thread: drains the legacy queue and fans out.
         threading.Thread(
@@ -74,6 +83,96 @@ class RunnerPool:
             daemon=True,
         ).start()
         return managed
+
+    def start_batch(self, *, batch_id: str, tickers: List[str],
+                    base_job: Dict[str, Any]) -> List[str]:
+        """Create N runs in 'queued' status for a batch and kick off the first one.
+
+        ``base_job`` is the shared run config (provider, models, depth, vendors,
+        date). For each ticker we generate a unique run_id and insert a 'queued'
+        row in the runs table. Returns the ordered list of run_ids.
+
+        When a batch run completes, ``_ingest`` sees the ``done``/``error`` event
+        and calls ``_advance_batch`` to start the next queued run.
+        """
+        if not tickers:
+            return []
+
+        # Insert queued rows for every ticker.
+        run_ids: List[str] = []
+        for ticker in tickers:
+            run_id = storage.new_run_id()
+            run_ids.append(run_id)
+            storage.create_run_in_batch(
+                run_id=run_id, batch_id=batch_id, ticker=ticker,
+                trade_date=base_job["trade_date"],
+                provider=base_job["llm_provider"],
+                deep_model=base_job["deep_think_llm"],
+                quick_model=base_job["quick_think_llm"],
+                debate_rounds=base_job["max_debate_rounds"],
+                risk_rounds=base_job["max_risk_discuss_rounds"],
+                vendors=base_job.get("data_vendors") or {},
+            )
+
+        # Kick off the first one. The rest fire on done-events.
+        self._start_next_in_batch(batch_id)
+        return run_ids
+
+    def _start_next_in_batch(self, batch_id: str) -> bool:
+        """Start the next queued run in a batch. Returns False if none left
+        (in which case the batch is finalised as 'done')."""
+        next_run = storage.next_queued_in_batch(batch_id)
+        if not next_run:
+            storage.finalize_batch(batch_id)
+            return False
+        # Build the job from the stored row (vendors live in vendors_json).
+        vendors: Dict[str, str] = {}
+        try:
+            vendors = json.loads(next_run.get("vendors_json") or "{}")
+        except Exception:
+            pass
+        job = {
+            "ticker": next_run["ticker"],
+            "trade_date": next_run["trade_date"],
+            "llm_provider": next_run["provider"],
+            "deep_think_llm": next_run["deep_model"],
+            "quick_think_llm": next_run["quick_model"],
+            "max_debate_rounds": next_run["debate_rounds"] or 1,
+            "max_risk_discuss_rounds": next_run["risk_rounds"] or 1,
+            "data_vendors": vendors or {
+                "core_stock_apis": "yfinance",
+                "technical_indicators": "yfinance",
+                "fundamental_data": "yfinance",
+                "news_data": "yfinance",
+            },
+        }
+        self.start(run_id=next_run["run_id"], job=job, batch_id=batch_id)
+        return True
+
+    def cancel_batch(self, batch_id: str) -> int:
+        """Cancel any running run for this batch + mark remaining queued runs
+        as cancelled. Returns the count of cancelled queued runs."""
+        # Cancel the currently-active run if any.
+        with self._lock:
+            active = [m for m in self._runs.values()
+                      if getattr(m, "batch_id", None) == batch_id and m.handle.is_running()]
+        for m in active:
+            m.handle.cancel()
+        # Mark queued rows as error to skip them, finalize the batch.
+        try:
+            import sqlite3
+            with sqlite3.connect(storage.DB_PATH) as conn:
+                cur = conn.execute(
+                    "UPDATE runs SET status='error', error_message='cancelled with batch' "
+                    "WHERE batch_id=? AND status='queued'",
+                    (batch_id,),
+                )
+                count = cur.rowcount
+                conn.commit()
+        except Exception:
+            count = 0
+        storage.cancel_batch(batch_id)
+        return count
 
     def get(self, run_id: str) -> Optional[ManagedRun]:
         with self._lock:
@@ -198,6 +297,16 @@ class RunnerPool:
             managed.subscribers.clear()
         for q in subs:
             self._loop_call(q.put_nowait, {"type": "_eof", "data": {}})
+
+        # If this run was part of a batch, kick off the next queued one.
+        # Run on a worker thread to avoid blocking the reader.
+        batch_id = getattr(managed, "batch_id", None)
+        if batch_id:
+            threading.Thread(
+                target=self._start_next_in_batch,
+                args=(batch_id,),
+                daemon=True,
+            ).start()
 
     def _loop_call(self, fn, *args, **kwargs) -> None:
         """Schedule a thread-safe call on the asyncio loop, falling back to

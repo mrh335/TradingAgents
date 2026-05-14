@@ -6,6 +6,9 @@
 // All paths in this file start with `/api/...` so they hit the rewrite.
 
 import type {
+  BatchCreateRequest,
+  BatchDetail,
+  BatchSummary,
   Brief,
   CalendarEvent,
   ChatMessage,
@@ -290,6 +293,15 @@ export const News = {
 };
 
 // ---- Simulation --------------------------------------------------------
+
+export const Batches = {
+  create: (req: BatchCreateRequest) =>
+    request<BatchDetail>("/runs/batch", { method: "POST", body: JSON.stringify(req) }),
+  list: () => request<BatchSummary[]>("/runs/batch"),
+  get: (id: string) => request<BatchDetail>(`/runs/batch/${id}`),
+  cancel: (id: string) =>
+    request<BatchDetail>(`/runs/batch/${id}/cancel`, { method: "POST" }),
+};
 
 export const Simulation = {
   run: (req: SimRunRequest) =>

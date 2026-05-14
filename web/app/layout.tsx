@@ -14,6 +14,7 @@ const NAV = [
   { href: "/watchlist", label: "Watchlist" },
   { href: "/portfolio", label: "Portfolio" },
   { href: "/run", label: "Run" },
+  { href: "/batch", label: "Batch" },
   { href: "/history", label: "History" },
   { href: "/calendar", label: "Calendar" },
   { href: "/news", label: "News" },

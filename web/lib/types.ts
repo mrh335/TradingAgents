@@ -249,3 +249,38 @@ export type SimDetail = SimRow & {
   scenario: Record<string, any>;
   result: SimResult;
 };
+
+// ---- Batches -----------------------------------------------------------
+
+export type BatchSummary = {
+  id: string;
+  name?: string | null;
+  trade_date: string;
+  total: number;
+  provider?: string | null;
+  deep_model?: string | null;
+  quick_model?: string | null;
+  debate_rounds?: number | null;
+  risk_rounds?: number | null;
+  status: string;
+  started_at: string;
+  completed_at?: string | null;
+  error_message?: string | null;
+};
+
+export type BatchDetail = BatchSummary & {
+  runs: RunSummary[];
+  counts: Record<string, number>;
+};
+
+export type BatchCreateRequest = {
+  name?: string;
+  tickers: string[];
+  trade_date: string;
+  llm_provider: string;
+  deep_think_llm: string;
+  quick_think_llm: string;
+  max_debate_rounds: number;
+  max_risk_discuss_rounds: number;
+  data_vendors: Record<string, string>;
+};

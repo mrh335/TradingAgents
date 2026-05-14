@@ -21,6 +21,7 @@ from gui import storage
 from service.runner_pool import pool
 from service.streaming import broadcaster
 from service.routers import (
+    batches,
     briefs,
     calendar as calendar_router,
     charts as charts_router,
@@ -102,6 +103,9 @@ async def _shutdown() -> None:
 
 # Routers
 app.include_router(health.router)
+# Note: batches router registers BEFORE runs.router so its prefix
+# /runs/batch wins over runs.router's /runs/{run_id} catch-all.
+app.include_router(batches.router)
 app.include_router(runs.router)
 app.include_router(briefs.router)
 app.include_router(chat.router)

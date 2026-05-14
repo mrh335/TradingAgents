@@ -107,8 +107,30 @@ def init_db() -> None:
                 result_json TEXT,
                 created_at TEXT NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS batches (
+                id TEXT PRIMARY KEY,
+                name TEXT,
+                trade_date TEXT NOT NULL,
+                total INTEGER NOT NULL,
+                provider TEXT,
+                deep_model TEXT,
+                quick_model TEXT,
+                debate_rounds INTEGER,
+                risk_rounds INTEGER,
+                status TEXT NOT NULL,
+                started_at TEXT NOT NULL,
+                completed_at TEXT,
+                error_message TEXT
+            );
             """
         )
+        # Lazy column add — older DBs created before batch support.
+        try:
+            c.execute("ALTER TABLE runs ADD COLUMN batch_id TEXT")
+        except Exception:
+            pass
+        c.execute("CREATE INDEX IF NOT EXISTS runs_batch ON runs(batch_id)")
 
 
 @contextmanager
@@ -412,3 +434,102 @@ def get_simulation(sim_id: int) -> Optional[Dict[str, Any]]:
 def delete_simulation(sim_id: int) -> None:
     with _conn() as c:
         c.execute("DELETE FROM simulations WHERE id=?", (sim_id,))
+
+
+# ---------------------------------------------------------------------------
+# Batches — group of runs over a ticker list with one shared config.
+# ---------------------------------------------------------------------------
+
+def new_batch_id() -> str:
+    return uuid.uuid4().hex
+
+
+def create_batch(*, batch_id: str, name: Optional[str], trade_date: str,
+                 total: int, provider: str, deep_model: str, quick_model: str,
+                 debate_rounds: int, risk_rounds: int) -> None:
+    with _conn() as c:
+        c.execute(
+            """INSERT INTO batches(id, name, trade_date, total, provider,
+                                   deep_model, quick_model, debate_rounds,
+                                   risk_rounds, status, started_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'running', ?)""",
+            (batch_id, name, trade_date, total, provider, deep_model,
+             quick_model, debate_rounds, risk_rounds, _now()),
+        )
+
+
+def finalize_batch(batch_id: str, *, error: Optional[str] = None) -> None:
+    status = "error" if error else "done"
+    with _conn() as c:
+        c.execute(
+            """UPDATE batches SET status=?, completed_at=?, error_message=?
+               WHERE id=?""",
+            (status, _now(), error, batch_id),
+        )
+
+
+def cancel_batch(batch_id: str) -> None:
+    with _conn() as c:
+        c.execute(
+            "UPDATE batches SET status='cancelled', completed_at=? WHERE id=?",
+            (_now(), batch_id),
+        )
+
+
+def get_batch(batch_id: str) -> Optional[Dict[str, Any]]:
+    with _conn() as c:
+        row = c.execute("SELECT * FROM batches WHERE id=?", (batch_id,)).fetchone()
+        return dict(row) if row else None
+
+
+def list_batches(limit: int = 50) -> List[Dict[str, Any]]:
+    with _conn() as c:
+        rows = c.execute(
+            "SELECT * FROM batches ORDER BY started_at DESC LIMIT ?", (limit,)
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def runs_in_batch(batch_id: str) -> List[Dict[str, Any]]:
+    with _conn() as c:
+        rows = c.execute(
+            """SELECT * FROM runs WHERE batch_id=?
+               ORDER BY started_at ASC""",
+            (batch_id,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def create_run_in_batch(*, run_id: str, batch_id: str, ticker: str,
+                        trade_date: str, provider: str, deep_model: str,
+                        quick_model: str, debate_rounds: int, risk_rounds: int,
+                        vendors: Dict[str, str]) -> None:
+    """Same as create_run but tagged with batch_id and starts in ``queued``."""
+    with _conn() as c:
+        c.execute(
+            """INSERT INTO runs(run_id, ticker, trade_date, provider, deep_model,
+                                quick_model, debate_rounds, risk_rounds, vendors_json,
+                                status, started_at, batch_id)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)""",
+            (run_id, ticker, trade_date, provider, deep_model, quick_model,
+             debate_rounds, risk_rounds, json.dumps(vendors), _now(), batch_id),
+        )
+
+
+def next_queued_in_batch(batch_id: str) -> Optional[Dict[str, Any]]:
+    """Find the next not-yet-started run in a batch (status='queued')."""
+    with _conn() as c:
+        row = c.execute(
+            """SELECT * FROM runs WHERE batch_id=? AND status='queued'
+               ORDER BY started_at ASC LIMIT 1""",
+            (batch_id,),
+        ).fetchone()
+        return dict(row) if row else None
+
+
+def mark_run_running(run_id: str) -> None:
+    with _conn() as c:
+        c.execute(
+            "UPDATE runs SET status='running', started_at=? WHERE run_id=?",
+            (_now(), run_id),
+        )
