@@ -34,7 +34,11 @@ DEFAULT_CONFIG = {
     # Debate and discussion settings
     "max_debate_rounds": 1,
     "max_risk_discuss_rounds": 1,
-    "max_recur_limit": 100,
+    # LangGraph recursion limit. Local Ollama models sometimes struggle
+    # with the tool-use protocol and re-enter the same node repeatedly.
+    # 100 is the framework default; bumped to 250 to give weaker models
+    # more rope before LangGraph trips its safety stop.
+    "max_recur_limit": 250,
     # Data vendor configuration
     # Category-level configuration (default for all tools in category)
     "data_vendors": {

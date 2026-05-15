@@ -348,7 +348,17 @@ def run(job: Dict[str, Any]) -> None:
     ta.memory_log.store_decision(ticker=ticker, trade_date=trade_date,
                                  final_trade_decision=decision_text)
 
-    decision = ta.process_signal(decision_text)
+    # Some providers (especially local Ollama models) produce essay-style PM
+    # output without an explicit "Rating: X" header. The Trader plan reliably
+    # carries a "FINAL TRANSACTION PROPOSAL: X" or "Action: X" line. Hand
+    # both to the parser so a vague PM doesn't bury a clear trader verdict.
+    trader_text = (
+        final_state.get("trader_investment_decision")
+        or final_state.get("trader_investment_plan")
+        or ""
+    )
+    combined_text = (decision_text + "\n\n" + trader_text).strip() if trader_text else decision_text
+    decision = ta.process_signal(combined_text)
 
     if log_warning:
         emit({"type": "warning", "message": log_warning})
