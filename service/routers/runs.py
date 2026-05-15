@@ -79,6 +79,60 @@ def cancel_run(run_id: str) -> dict:
     return {"cancelled": True}
 
 
+@router.delete("/{run_id}")
+def delete_run(run_id: str, delete_files: bool = True) -> dict:
+    """Delete a run row + (optionally) its on-disk archive and sidecars.
+
+    Archives are never overwritten — they accumulate over time as you
+    re-run the same ticker/date. This endpoint lets the History page
+    surface a Delete button so you can prune deliberately. Default is
+    to delete the SQLite row AND any on-disk archive + sidecars; pass
+    ``delete_files=false`` to keep the files and only purge the row.
+    """
+    import sqlite3
+    from pathlib import Path
+    row = storage.get_run(run_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="run not found")
+
+    archive_path = row.get("log_path") or ""
+    files_deleted: list[str] = []
+    if delete_files and archive_path:
+        ap = Path(archive_path)
+        # Delete the archive + every sidecar that shares its basename.
+        if ap.exists():
+            try:
+                ap.unlink()
+                files_deleted.append(str(ap))
+            except OSError:
+                pass
+            # Sidecars: <basename>.brief.json, .brief.md, .brief.request.md, .analysis.md, .chat.md
+            stem_base = ap.with_suffix("")  # strip .json
+            for sidecar in stem_base.parent.glob(stem_base.name + ".*"):
+                if sidecar == ap:
+                    continue
+                try:
+                    sidecar.unlink()
+                    files_deleted.append(str(sidecar))
+                except OSError:
+                    pass
+
+    # Also delete chat messages associated with this run.
+    try:
+        storage.clear_chat(run_id)
+    except Exception:
+        pass
+
+    with sqlite3.connect(storage.DB_PATH) as c:
+        c.execute("DELETE FROM runs WHERE run_id=?", (run_id,))
+        c.commit()
+
+    return {
+        "deleted_run": run_id,
+        "files_deleted": files_deleted,
+    }
+
+
 # ---------------------------------------------------------------------------
 # History from disk (legacy CLI runs + GUI archives)
 # ---------------------------------------------------------------------------

@@ -65,7 +65,25 @@ export const Runs = {
     }),
   cancel: (runId: string) =>
     request<{ cancelled: boolean }>(`/runs/${runId}/cancel`, { method: "POST" }),
+  delete: (runId: string, deleteFiles = true) =>
+    request<{ deleted_run: string; files_deleted: string[] }>(
+      `/runs/${runId}?delete_files=${deleteFiles}`,
+      { method: "DELETE" },
+    ),
   diskIndex: () => request<any[]>(`/runs/disk/index`),
+};
+
+export const Sidecars = {
+  pending: () =>
+    request<Array<{
+      run_id: string;
+      ticker: string;
+      trade_date: string;
+      archive_path: string;
+      request_path: string;
+      request_body: string;
+      has_brief_already: boolean;
+    }>>("/sidecars/pending"),
 };
 
 // ---- Briefs -------------------------------------------------------------

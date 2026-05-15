@@ -1,100 +1,151 @@
 # Claude Code companion guide
 
 This file tells Claude Code how to participate as a **token-free analyst**
-on completed run archives — reading the on-disk JSON, producing briefs
-and deep dives, and writing the results back to the same directory where
-the web app will pick them up.
+on completed run archives — reading the run's analysis, producing briefs
+and deep dives, and submitting the results so the web app surfaces them
+without any LLM API calls being made.
 
 ## The deal
 
 The web app on the NAS produces run archives at:
 
 ```
-~/.tradingagents/logs/<TICKER>/TradingAgentsStrategy_logs/runs/
+<NAS>:/volume1/docker/tradingagents/data/logs/<TICKER>/TradingAgentsStrategy_logs/runs/
     <run_id>__<YYYY-MM-DD>__<UTC_ts>.json
 ```
 
-When a user clicks **"Request via Claude Code"** on the Brief panel, the
-web app drops a marker file next to the archive:
+When a user clicks **"Request via Claude Code"** in the Brief panel, the
+web app drops a marker file next to the archive on the NAS. **You don't
+need to mount the NAS filesystem locally** — there's an API workflow
+that does everything via HTTP.
+
+The API lives at:
 
 ```
-<run_id>__<date>__<ts>.brief.request.md
+http://192.168.2.34:8001
 ```
-
-Open Claude Code in this repo, scan for pending markers, produce briefs
-**without making any LLM API calls** (your parametric knowledge + the
-archive contents are enough), and drop sidecar files. The web app polls
-every 8s and surfaces the brief automatically.
 
 ---
 
-## Sidecar file conventions
+## Primary workflow (API-based, no NAS mount required)
 
-The web app reads any of these if present, alongside the archive:
+This is the recommended path. Claude Code on any machine that can reach
+the NAS over the LAN handles every step via HTTP — no SMB mount, no file
+permissions issues, no path-translation. Use the `curl` examples or the
+equivalent `WebFetch`/`Bash` tool calls.
 
-| File | Purpose | Format |
+### 1. List pending requests
+
+```bash
+curl -s http://192.168.2.34:8001/sidecars/pending | jq
+```
+
+Returns a JSON list of `{run_id, ticker, trade_date, archive_path,
+request_path, request_body, has_brief_already}`. The `request_body` is
+the full templated prompt the web app wrote — read it for context.
+
+If the list is empty, there's nothing to do — the user hasn't requested
+any briefs yet. Confirm with them before doing anything else.
+
+### 2. Fetch the full archive for one request
+
+```bash
+curl -s http://192.168.2.34:8001/sidecars/run/{run_id} | jq
+```
+
+Returns `{run_id, ticker, trade_date, archive_path, archive, existing_sidecars,
+request_pending, request_body}`. The `archive` field is the full archive
+JSON envelope — `metadata`, `state` (all the analyst reports + debates +
+final decision), and `tool_trace` (every tool call the agents made).
+
+### 3. Build a Brief
+
+Construct an object matching the schema in `gui/brief.py` (Brief +
+Trigger Pydantic models). Required fields:
+
+| Field | Type | Notes |
 |---|---|---|
-| `*.brief.json` | Structured brief — preferred | `Brief` Pydantic schema from `gui/brief.py` |
-| `*.brief.md` | Free-form markdown brief — fallback | any markdown |
-| `*.brief.request.md` | Marker the web app drops to ask for a brief | template the app writes; you delete |
-| `*.analysis.md` | Optional deep-dive (not surfaced yet) | any markdown |
-| `*.chat.md` | Optional chat transcript (not surfaced yet) | any markdown |
+| `decision` | str | One of: `Buy`, `Overweight`, `Hold`, `Underweight`, `Sell` |
+| `tldr` | str | 2–3 plain-English sentences a non-investor understands |
+| `timeframe` | str | e.g. `"4–6 weeks"`, `"3–6 months"`, `"long-term core position"` |
+| `position_size` | str | e.g. `"4–5% of portfolio in three tranches"` |
+| `entry_strategy` | str | How to enter — lump sum vs tranches, price targets |
+| `stop_loss` | str | Condition or price level to exit if thesis fails |
+| `take_profit` | str | Condition or price level to take profits |
+| `triggers` | list[{condition, action}] | 3–7 if-then trigger points |
+| `key_risks` | list[str] | 3–5 plain-English failure modes |
+| `benchmark_view` | str | One sentence on vs SPY for the timeframe |
 
-The **web app never modifies sidecar files** other than dropping or deleting
-request markers. Your work is safe — re-running the web side never overwrites
-a brief.json that Claude Code wrote.
+### 4. Submit it
+
+```bash
+curl -s -X POST http://192.168.2.34:8001/sidecars/run/{run_id}/brief \
+  -H "content-type: application/json" \
+  -d @brief.json
+```
+
+Where `brief.json` is the structured Brief you built. The server writes
+the sidecar file AND clears the pending request marker as a side-effect.
+
+The web app polls every 8s while a request is pending. When the sidecar
+appears, the Brief panel shows a green **🤖 from Claude Code** badge.
+
+### Alternative: free-form markdown
+
+If the analysis doesn't fit the structured schema cleanly, submit
+markdown instead:
+
+```bash
+curl -s -X POST http://192.168.2.34:8001/sidecars/run/{run_id}/brief/markdown \
+  -H "content-type: application/json" \
+  -d '{"markdown": "# NVDA — 2026-05-14\n\n## Decision\n..."}'
+```
+
+The web app renders this with a "Claude Code (markdown)" badge.
+
+### Cancel a pending request
+
+```bash
+curl -s -X DELETE http://192.168.2.34:8001/sidecars/run/{run_id}/request
+```
 
 ---
 
-## Workflow — handle a single pending request
+## Filesystem workflow (only if API isn't reachable)
 
-1. Read the request marker file. It contains the archive path and a
-   templated prompt.
-2. Read the archive JSON. Top-level shape:
-   ```json
-   {
-     "kind": "tradingagents-gui-archive",
-     "metadata": {"ticker": "...", "trade_date": "...", "provider": "...", ...},
-     "state": {
-       "market_report": "...",
-       "sentiment_report": "...",
-       "news_report": "...",
-       "fundamentals_report": "...",
-       "investment_debate_state": {"bull_history": "...", "bear_history": "...", "judge_decision": "..."},
-       "trader_investment_plan": "...",
-       "risk_debate_state": {"aggressive_history": "...", "conservative_history": "...", "neutral_history": "...", "judge_decision": "..."},
-       "final_trade_decision": "..."
-     },
-     "tool_trace": [...]
-   }
-   ```
-3. Build a `Brief` matching the schema in `gui/brief.py`. Required fields:
+If for some reason the API isn't accessible, you can do this directly on
+the NAS filesystem (requires the NAS shared at `/volume1/docker/` or
+equivalent SMB mount):
 
-   | Field | Type | Notes |
-   |---|---|---|
-   | `decision` | str | One of: `Buy`, `Overweight`, `Hold`, `Underweight`, `Sell` |
-   | `tldr` | str | 2–3 plain-English sentences a non-investor understands |
-   | `timeframe` | str | e.g. `"4–6 weeks"`, `"3–6 months"`, `"long-term core position"` |
-   | `position_size` | str | e.g. `"4–5% of portfolio in three tranches"` |
-   | `entry_strategy` | str | How to enter — lump sum vs tranches, price targets |
-   | `stop_loss` | str | Condition or price to exit if thesis fails |
-   | `take_profit` | str | Condition or price to take profits |
-   | `triggers` | list | 3–7 `{condition, action}` if-then trigger points |
-   | `key_risks` | list[str] | 3–5 plain-English failure modes |
-   | `benchmark_view` | str | One sentence on vs SPY for the timeframe |
-
-4. Write it to `<archive_basename>.brief.json`. Example:
-   ```
-   data/logs/NVDA/TradingAgentsStrategy_logs/runs/
-       abc123__2026-05-14__20260514T080000Z.json           ← archive
-       abc123__2026-05-14__20260514T080000Z.brief.json     ← write this
-   ```
-5. **Delete** the `*.brief.request.md` marker so it doesn't show as
-   pending forever.
+1. Walk `~/.tradingagents/logs/<TICKER>/TradingAgentsStrategy_logs/runs/`
+   for files matching `*.brief.request.md`.
+2. For each: read the request file (contains the archive path inline).
+3. Read the archive JSON at the path the request mentions.
+4. Build the Brief and write it to `<basename>.brief.json` next to the
+   archive.
+5. Delete the `*.brief.request.md` marker.
 
 The web app's `GET /runs/{id}/brief` reads `*.brief.json` if present and
-returns it tagged `source: "sidecar"` — visible in the UI as a green
-"🤖 from Claude Code" badge.
+returns it tagged `source: "sidecar"`. The user sees a green badge.
+
+---
+
+## Sidecar file conventions (file-level reference)
+
+When using either workflow, the file layout is:
+
+| File | Purpose | Who writes |
+|---|---|---|
+| `*.json` | The archive (machine-written analysis output) | Web app worker (immutable) |
+| `*.brief.json` | Structured brief — preferred | You (via API or filesystem) |
+| `*.brief.md` | Free-form markdown brief — fallback | You |
+| `*.brief.request.md` | Marker the web app drops to ask for a brief | Web app drops; you delete |
+| `*.analysis.md` | Optional deep-dive (not surfaced yet) | You |
+| `*.chat.md` | Optional chat transcript (not surfaced yet) | You |
+
+The **web app never modifies sidecar files** other than dropping or
+deleting the request marker. Your work is safe — re-running the web side
+never overwrites a brief.json that Claude Code wrote.
 
 ---
 
@@ -104,8 +155,7 @@ returns it tagged `source: "sidecar"` — visible in the UI as a green
   Portfolio Manager said "stop at $183 (200-day SMA)", use those exact
   numbers in `stop_loss`.
 - **5-tier vocabulary for `decision`.** Don't invent new ratings;
-  `"Accumulate"` is conventionally `Buy`, `"Reduce"` is `Underweight`,
-  `"Avoid"` is `Sell`.
+  `"Accumulate"` is `Buy`, `"Reduce"` is `Underweight`, `"Avoid"` is `Sell`.
 - **`tldr` leads with the action.** "Initiate a 4% position in three
   tranches" beats "After considering the analysis, one might…".
 - **Triggers are concrete and measurable.** "MACD bullish crossover
@@ -113,28 +163,6 @@ returns it tagged `source: "sidecar"` — visible in the UI as a green
 - **Key risks are plain English.** Not "elevated multiple compression
   risk during late-cycle dynamics" — try "stock could drop sharply if
   the AI capex story slows down".
-
----
-
-## Workflow — handle all pending requests at once
-
-Common case: user batched 10 tickers overnight and you want to produce
-briefs for all of them.
-
-```bash
-# From the repo root in Claude Code:
-find ~/.tradingagents/logs -name '*.brief.request.md' -print
-```
-
-For each pending file:
-- Read the request marker (contains the archive path and meta)
-- Read the archive JSON
-- Generate the brief
-- Write the `.brief.json`
-- Delete the `.brief.request.md`
-
-If you batch them, write a short summary at the end describing what
-each ticker's recommendation was — useful for the user to scan.
 
 ---
 
@@ -161,10 +189,8 @@ recommendation pulled out of thin air.
 
 ## What NOT to do
 
-- **Don't write `.brief.json` sidecars unless requested.** The web app
-  only shows the sidecar source if it was explicitly asked for. Pre-empting
-  every archive with a sidecar would confuse the user about which briefs
-  are LLM-generated.
+- **Don't write sidecars unless requested.** Only act on runs that have
+  a `*.brief.request.md` marker (or appear in `/sidecars/pending`).
 - **Don't modify the archive JSON.** Treat it as read-only forensic data.
 - **Don't burn API tokens.** The point of this workflow is to *avoid*
   that. If you need to call out to an LLM for some reason, ask the user
@@ -177,11 +203,12 @@ recommendation pulled out of thin air.
 - `OPERATIONS.md` — NAS deployment + how runs reach disk
 - `gui/brief.py` — the Brief Pydantic schema (source of truth)
 - `gui/sidecars.py` — the web app's read/write helpers for sidecars
-- `service/routers/briefs.py` — the API routes the web app uses
+- `service/routers/sidecars.py` — the API routes documented above
+- `service/routers/briefs.py` — the Brief panel's GET/POST endpoints
 
 ---
 
-## Schema reference (copy this into the Brief you write)
+## Schema reference (copy this into the Brief you POST)
 
 ```json
 {

@@ -35,6 +35,7 @@ from service.routers import (
     portfolio,
     runs,
     settings,
+    sidecars as sidecars_router,
     simulation,
     streaming,
     watchlist,
@@ -121,6 +122,7 @@ app.include_router(calendar_router.router)
 app.include_router(news_feed.router)
 app.include_router(simulation.router)
 app.include_router(planner.router)
+app.include_router(sidecars_router.router)
 
 
 def main() -> int:
