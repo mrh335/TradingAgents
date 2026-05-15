@@ -70,16 +70,41 @@ export const Runs = {
 
 // ---- Briefs -------------------------------------------------------------
 
+type BriefResp = {
+  run_id: string;
+  brief: Brief | null;
+  cached: boolean;
+  source?: "sidecar" | "markdown_sidecar" | "llm" | null;
+  markdown?: string | null;
+  request_pending: boolean;
+};
+
 export const Briefs = {
-  get: (runId: string) =>
-    request<{ run_id: string; brief: Brief | null; cached: boolean }>(
-      `/runs/${runId}/brief`,
-    ),
+  get: (runId: string) => request<BriefResp>(`/runs/${runId}/brief`),
   generate: (runId: string, force = false) =>
-    request<{ run_id: string; brief: Brief; cached: boolean }>(
+    request<BriefResp>(
       `/runs/${runId}/brief${force ? "?force=true" : ""}`,
       { method: "POST" },
     ),
+  requestClaudeCode: (runId: string) =>
+    request<BriefResp>(`/runs/${runId}/request-claude-code-analysis`, {
+      method: "POST",
+    }),
+  cancelClaudeCodeRequest: (runId: string) =>
+    request<{ cleared: boolean }>(`/runs/${runId}/brief/request`, {
+      method: "DELETE",
+    }),
+  files: (runId: string) =>
+    request<{
+      archive: string | null;
+      sidecars: Array<{
+        name: string;
+        kind: string;
+        path: string;
+        size_bytes: number;
+        modified_at: string;
+      }>;
+    }>(`/runs/${runId}/files`),
 };
 
 // ---- Chat ---------------------------------------------------------------
