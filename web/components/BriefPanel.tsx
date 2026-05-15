@@ -132,11 +132,19 @@ export function BriefPanel({ runId }: { runId: string }) {
           <SourceBadge source={source} />
           <button
             className="btn text-xs"
+            onClick={() => requestCC.mutate()}
+            disabled={requestCC.isPending}
+            title="Drop a request marker — Claude Code will rewrite the brief sidecar, no API tokens used."
+          >
+            🤖 Re-request via Claude Code
+          </button>
+          <button
+            className="btn text-xs"
             onClick={() => generate.mutate(true)}
             disabled={generate.isPending}
-            title="Replace with a fresh LLM-generated brief"
+            title="Replace with a fresh LLM-generated brief (uses API tokens)"
           >
-            🔄 Regenerate via API
+            ✨ Regenerate via API
           </button>
         </div>
       </div>

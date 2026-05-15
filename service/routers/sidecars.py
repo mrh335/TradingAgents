@@ -202,3 +202,83 @@ def clear_request_marker(run_id: str) -> dict:
     if not archive_path:
         return {"cleared": False}
     return {"cleared": sidecars.clear_request(archive_path, "brief")}
+
+
+# ---------------------------------------------------------------------------
+# Bulk-request — drop markers across many runs in one call
+# ---------------------------------------------------------------------------
+
+class BulkRequestResult(BaseModel):
+    requested: List[str]      # run_ids the marker was dropped on
+    skipped: List[str]        # run_ids that already had a brief AND we didn't include them
+    no_archive: List[str]     # run_ids whose archive is missing
+
+
+_REQUEST_TEMPLATE_BULK = """\
+# Brief request for {ticker} ({trade_date})
+
+Auto-batched. Please process via the ``/sidecars/pending`` workflow
+described in CLAUDE.md — no API tokens to be spent here.
+
+## Archive
+
+```
+{archive_path}
+```
+
+## Run summary
+
+- Ticker: **{ticker}**
+- Trade date: **{trade_date}**
+- Decision label from framework: **{decision}**
+- Provider used for the analysis: **{provider}** ({deep_model} / {quick_model})
+
+See CLAUDE.md for the schema and conventions.
+"""
+
+
+@router.post("/request-all-missing", response_model=BulkRequestResult)
+def request_all_missing(include_existing: bool = False) -> BulkRequestResult:
+    """Drop a ``*.brief.request.md`` next to every completed run that
+    doesn't have a ``*.brief.json`` sidecar yet.
+
+    ``include_existing=true`` re-requests briefs even where one already
+    exists — useful when you've improved CLAUDE.md or want fresh briefs
+    on previously-briefed runs.
+    """
+    requested: List[str] = []
+    skipped: List[str] = []
+    no_archive: List[str] = []
+
+    for row in storage.list_runs(limit=10_000):
+        # Only act on completed runs.
+        if (row.get("status") or "").lower() != "done":
+            continue
+        archive_path = row.get("log_path") or ""
+        if not archive_path or not Path(archive_path).exists():
+            no_archive.append(row["run_id"])
+            continue
+
+        has_brief = sidecars.read_brief_sidecar(archive_path) is not None
+        if has_brief and not include_existing:
+            skipped.append(row["run_id"])
+            continue
+
+        # Drop the marker (idempotent — overwrites if already there).
+        prompt = _REQUEST_TEMPLATE_BULK.format(
+            ticker=row["ticker"],
+            trade_date=row["trade_date"],
+            decision=row.get("decision") or "—",
+            provider=row.get("provider") or "—",
+            deep_model=row.get("deep_model") or "—",
+            quick_model=row.get("quick_model") or "—",
+            archive_path=archive_path,
+        )
+        sidecars.write_request(archive_path, kind="brief", prompt=prompt)
+        requested.append(row["run_id"])
+
+    return BulkRequestResult(
+        requested=requested,
+        skipped=skipped,
+        no_archive=no_archive,
+    )

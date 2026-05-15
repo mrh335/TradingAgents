@@ -72,6 +72,12 @@ export default function HistoryPage() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ["runs"] }),
   });
 
+  // Bulk Claude Code request
+  const requestAll = useMutation({
+    mutationFn: (includeExisting: boolean) => Sidecars.requestAllMissing(includeExisting),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["sidecars-pending"] }),
+  });
+
   const data = runs.data ?? [];
   const allDecisions = useMemo(() => Array.from(new Set(data.map((r) => r.decision).filter(Boolean))) as string[], [data]);
   const allStatuses = useMemo(() => Array.from(new Set(data.map((r) => r.status).filter(Boolean))), [data]);
@@ -163,22 +169,67 @@ export default function HistoryPage() {
         </p>
       </header>
 
-      {(pending.data?.length ?? 0) > 0 && (
-        <div className="card border-warning/40 bg-warning/5">
-          <div className="flex items-center justify-between gap-3">
-            <div className="text-sm">
-              <span className="text-warning font-semibold">
-                ⏳ {pending.data!.length} pending Claude Code request{pending.data!.length === 1 ? "" : "s"}
-              </span>
-              <span className="text-muted ml-2">
-                Open Claude Code and ask it to{" "}
-                <code className="text-xs">curl http://192.168.2.34:8001/sidecars/pending</code>{" "}
-                to process. See CLAUDE.md for the full workflow.
-              </span>
-            </div>
+      {/* Claude Code controls — always visible, even with zero pending. */}
+      <div className="card border-accent/30">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="text-sm flex-1 min-w-0">
+            {(pending.data?.length ?? 0) > 0 ? (
+              <>
+                <span className="text-warning font-semibold">
+                  ⏳ {pending.data!.length} pending Claude Code request{pending.data!.length === 1 ? "" : "s"}
+                </span>
+                <div className="text-muted text-xs mt-1">
+                  Open Claude Code and tell it:{" "}
+                  <em>"process every pending brief request at <code>http://192.168.2.34:8001/sidecars/pending</code> — for each, fetch the archive, build a Brief per CLAUDE.md, and POST it back."</em>
+                </div>
+              </>
+            ) : (
+              <>
+                <span className="font-semibold">🤖 Claude Code briefs</span>
+                <div className="text-muted text-xs mt-1">
+                  Drop request markers in bulk for every completed run that doesn't have a Claude-Code-generated brief yet. Claude Code processes them from <code>/sidecars/pending</code> — zero API tokens.
+                </div>
+              </>
+            )}
+          </div>
+          <div className="flex gap-2 shrink-0">
+            <button
+              className="btn text-xs"
+              onClick={() => {
+                if (confirm("Drop a brief request marker on every completed run missing a Claude-Code brief?")) {
+                  requestAll.mutate(false);
+                }
+              }}
+              disabled={requestAll.isPending}
+              title="Adds a marker to runs that don't have a brief.json sidecar yet"
+            >
+              {requestAll.isPending ? "Requesting…" : "🤖 Request all missing"}
+            </button>
+            <button
+              className="btn text-xs"
+              onClick={() => {
+                if (confirm("Re-request briefs for EVERY run — including ones that already have a Claude-Code brief? Existing sidecars stay until Claude Code overwrites them.")) {
+                  requestAll.mutate(true);
+                }
+              }}
+              disabled={requestAll.isPending}
+              title="Re-runs Claude Code for all completed runs, even where a brief already exists"
+            >
+              🔄 Re-request all
+            </button>
           </div>
         </div>
-      )}
+        {requestAll.data && (
+          <div className="text-xs text-muted mt-3 pt-3 border-t border-border">
+            <span className="text-success">✓ Requested:</span> {requestAll.data.requested.length}
+            {" · "}
+            <span>Skipped (already briefed):</span> {requestAll.data.skipped.length}
+            {requestAll.data.no_archive.length > 0 && (
+              <>{" · "}<span className="text-warning">No archive:</span> {requestAll.data.no_archive.length}</>
+            )}
+          </div>
+        )}
+      </div>
 
       {/* ---- Filters ---- */}
       <div className="card grid grid-cols-2 md:grid-cols-7 gap-3 items-end">

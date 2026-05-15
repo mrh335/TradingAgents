@@ -84,6 +84,14 @@ export const Sidecars = {
       request_body: string;
       has_brief_already: boolean;
     }>>("/sidecars/pending"),
+  requestAllMissing: (includeExisting = false) =>
+    request<{
+      requested: string[];
+      skipped: string[];
+      no_archive: string[];
+    }>(`/sidecars/request-all-missing?include_existing=${includeExisting}`, {
+      method: "POST",
+    }),
 };
 
 // ---- Briefs -------------------------------------------------------------
