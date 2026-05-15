@@ -27,6 +27,9 @@ COPY tradingagents ./tradingagents
 COPY cli ./cli
 COPY gui ./gui
 COPY service ./service
+# scripts/ — includes maintenance utilities (re-extract decisions, etc.)
+# that the user can ``docker exec ... python -m scripts.<name>`` from outside.
+COPY scripts ./scripts
 # Install with both extras so the API container can also render exports
 # (gui modules are reused by the API as the analysis backend).
 RUN pip install --no-cache-dir '.[gui,service]'
