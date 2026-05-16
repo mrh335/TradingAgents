@@ -1,8 +1,9 @@
 "use client";
 
+import Link from "next/link";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Runs, SettingsApi } from "@/lib/api";
+import { RunQueue, Runs, SettingsApi } from "@/lib/api";
 import { runStreamUrl } from "@/lib/ws";
 import type { RunCreateRequest, RunEvent } from "@/lib/types";
 import { Markdown } from "@/components/Markdown";
@@ -125,6 +126,27 @@ export default function RunPage() {
       setUi(EMPTY_UI);
       setRunId(r.run_id);
       qc.invalidateQueries({ queryKey: ["runs"] });
+    },
+  });
+
+  const queueMutation = useMutation({
+    mutationFn: (req: RunCreateRequest) =>
+      RunQueue.create({
+        ticker: req.ticker,
+        trade_date: req.trade_date,
+        mode: "analyze",
+        options: {
+          provider: req.llm_provider,
+          deep_model: req.deep_think_llm,
+          quick_model: req.quick_think_llm,
+          debate_rounds: req.max_debate_rounds,
+          risk_rounds: req.max_risk_discuss_rounds,
+          data_vendors: req.data_vendors,
+        },
+        requested_by: "web-ui:/run",
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["run-queue"] });
     },
   });
 
@@ -292,18 +314,44 @@ export default function RunPage() {
             }
           />
         </div>
-        <div className="col-span-full flex justify-end">
+        <div className="col-span-full flex flex-wrap items-center justify-end gap-2">
+          <button
+            type="button"
+            className="btn"
+            onClick={() => queueMutation.mutate(form)}
+            disabled={queueMutation.isPending || isStreaming}
+            title={
+              "Don't run now — drop the request on the queue. A poller " +
+              "(typically the tradingagents-analyze skill in Claude Desktop " +
+              "or Claude Code) will pick it up and post the result back."
+            }
+          >
+            {queueMutation.isPending ? "Queueing…" : "🤖 Queue for Claude Desktop"}
+          </button>
           <button
             type="submit"
             className="btn btn-primary"
             disabled={isStreaming || create.isPending}
           >
-            {isStreaming ? "Streaming…" : "▶ Analyze"}
+            {isStreaming ? "Streaming…" : "▶ Analyze now"}
           </button>
         </div>
         {create.isError && (
           <div className="col-span-full text-sm text-danger">
             {(create.error as Error).message}
+          </div>
+        )}
+        {queueMutation.isError && (
+          <div className="col-span-full text-sm text-danger">
+            Queue failed: {(queueMutation.error as Error).message}
+          </div>
+        )}
+        {queueMutation.isSuccess && queueMutation.data && (
+          <div className="col-span-full text-sm text-success">
+            ✓ Queued {queueMutation.data.ticker} for {queueMutation.data.trade_date}.{" "}
+            <Link href="/queue" className="text-accent hover:underline">
+              View queue →
+            </Link>
           </div>
         )}
       </form>

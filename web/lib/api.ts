@@ -375,3 +375,46 @@ export const Simulation = {
   delete: (id: number) =>
     request<{ deleted: number }>(`/sim/${id}`, { method: "DELETE" }),
 };
+
+// ---- Run queue (Claude Desktop / Claude Code worker handoff) ----------
+
+export type QueueItem = {
+  id: string;
+  ticker: string;
+  trade_date: string;
+  mode: "analyze" | "brief" | "refresh";
+  options: Record<string, any>;
+  requested_by: string | null;
+  priority: number;
+  status: "pending" | "claimed" | "done" | "error" | "cancelled";
+  claimed_by: string | null;
+  claimed_at: string | null;
+  completed_at: string | null;
+  result_run_id: string | null;
+  error_message: string | null;
+  created_at: string;
+};
+
+export const RunQueue = {
+  list: (status?: QueueItem["status"]) => {
+    const qs = status ? `?status=${status}` : "";
+    return request<QueueItem[]>(`/run-queue${qs}`);
+  },
+  pending: () => request<QueueItem[]>("/run-queue/pending"),
+  create: (req: {
+    ticker: string;
+    trade_date: string;
+    mode?: "analyze" | "brief" | "refresh";
+    options?: Record<string, any>;
+    requested_by?: string;
+    priority?: number;
+  }) =>
+    request<QueueItem>("/run-queue", {
+      method: "POST",
+      body: JSON.stringify({ mode: "analyze", ...req }),
+    }),
+  cancel: (id: string) =>
+    request<QueueItem>(`/run-queue/${id}/cancel`, { method: "POST" }),
+  delete: (id: string) =>
+    request<{ deleted: string }>(`/run-queue/${id}`, { method: "DELETE" }),
+};

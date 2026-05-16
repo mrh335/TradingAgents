@@ -33,6 +33,8 @@ end publish a run archive + brief that the existing webapp will index.
 | `/tradingagents-analyze plot <TICKER>` | Decision-history chart of past runs (Phase 6) |
 | `/tradingagents-analyze <TICKER> --holdings` | Include your current positions in the recommendation (Phase 6) |
 | `/tradingagents-analyze <TICKER> --horizon long\|short` | Tune the recommendation to your planning horizon (Phase 6) |
+| `/tradingagents-analyze --queue` | Drain the webapp's run queue (Phase 9) |
+| "process the run queue" / "drain pending analyses" / "do queued analyses" | Same — natural language |
 
 Natural language maps to these — Claude interprets:
 - `analyze NVDA today` → defaults
@@ -40,6 +42,7 @@ Natural language maps to these — Claude interprets:
 - `update my NVDA analysis` → `--update` (the default behaviour anyway)
 - `ask the NVDA run why bull won` → `ask <latest_nvda_run_id> "..."`
 - `run NVDA and AMD and AVGO` → multi-ticker batch
+- `process the run queue` / `do pending analyses` → queue-drain mode (Phase 9)
 
 ## Phase progression
 
@@ -423,6 +426,113 @@ Save the PNG locally too with `--save-png <path>`.
 **No local matplotlib dep** — rendering happens on the server (which
 already has matplotlib via the `service` extras). The skill is
 stdlib-only.
+
+## Phase 9 — Queue-drain mode (`--queue` / "process the run queue")
+
+The webapp at `http://192.168.2.34:8001` exposes a `run_queue` table so a
+user can hit "🤖 Queue for Claude Desktop" on the Run page and walk away —
+this skill (running in Claude Desktop or Claude Code) is the worker that
+picks the request up later. Saves the user from babysitting a synchronous
+run and routes the token cost through the local subscription instead of
+the webapp's pay-per-call API key.
+
+### When to invoke this mode
+
+- User says: "process the run queue", "do pending analyses", "drain the
+  queue", `/tradingagents-analyze --queue`.
+- Or you're running unattended via `/loop` / scheduled task and want to
+  poll for work.
+
+### Procedure
+
+1. **Claim work**:
+   ```bash
+   curl -s -X POST $API/run-queue/claim \
+     -H "content-type: application/json" \
+     -d '{"claimed_by": "claude-desktop:<your-id>", "max_items": 1, "mode": "analyze"}'
+   ```
+   `max_items` is typically 1 — process one at a time so a failure
+   doesn't strand multiple jobs. The server atomically marks the row
+   `status='claimed'` so a sibling worker won't double-process it.
+
+2. **Empty result → nothing to do**:
+   ```
+   No pending items. Stop. Tell the user.
+   ```
+   Do NOT poll in a tight loop — wait at least 60s before re-checking,
+   or use `/loop` with `delaySeconds=900` (15 min) for unattended mode.
+
+3. **For each claimed item**, extract the parameters from `options`:
+   ```
+   {
+     "provider": "anthropic",
+     "deep_model": "claude-sonnet-4-6",
+     "quick_model": "claude-haiku-4-5",
+     "debate_rounds": 1,
+     "risk_rounds": 1,
+     "data_vendors": {...}
+   }
+   ```
+   These came from the Run-page form. Run the **standard single-ticker
+   flow** (Phase 0 → Phase 10) honoring these as overrides. **One
+   exception**: don't allocate a fresh `run_id` in Phase 0 — use the
+   queue item's `id` as a prefix so the resulting run is linkable:
+   `run_id = "queue-" + queue_item["id"][:8] + "-" + uuid4()[:8]`.
+
+4. **Publish the result** to the framework with `scripts/publish.py`
+   (which POSTs to `/runs/import`). Capture the returned `run_id`.
+
+5. **Mark the queue item complete**:
+   ```bash
+   curl -s -X POST $API/run-queue/{queue_id}/complete \
+     -H "content-type: application/json" \
+     -d '{"result_run_id": "<the-run_id-from-import>"}'
+   ```
+   The UI uses `result_run_id` to render a "View result →" link on the
+   /queue page, so always pass it when the run succeeded.
+
+6. **On failure** (any phase errors, archive validation fails,
+   `/runs/import` rejects it):
+   ```bash
+   curl -s -X POST $API/run-queue/{queue_id}/fail \
+     -H "content-type: application/json" \
+     -d '{"error": "<short human-readable reason>"}'
+   ```
+   Don't silently skip. The error text shows up next to the row in the
+   webapp so the user can re-queue or investigate.
+
+7. **Janitor pass** (optional, do this on every claim or once per
+   wake-up): clear stuck claims from a previous worker that died:
+   ```bash
+   curl -s -X POST "$API/run-queue/reclaim-stale?older_than_seconds=1800"
+   ```
+
+### Final user report
+
+After draining (or claiming and finding nothing), summarize:
+
+```
+3 queue items processed:
+  qid-abc1...  NVDA   Buy   → http://192.168.2.34:3001/history/queue-abc1...
+  qid-def2...  AAPL   Hold  → http://192.168.2.34:3001/history/queue-def2...
+  qid-ghi3...  MSFT   FAIL: yfinance returned no fundamentals
+```
+
+If running unattended via `/loop`, the report is just a 1-line summary;
+don't dump prose if there's no human to read it.
+
+### Unattended scheduling
+
+Use Claude Code's `/loop` skill to keep a worker running:
+
+```
+/loop process the run queue --interval 15min
+```
+
+…or via Windows Task Scheduler, launch Claude Code with the prompt
+`/tradingagents-analyze --queue` at intervals. Either way the worker
+is fault-tolerant: stale claims (no progress for 30 min) get re-pended
+automatically on the next wake-up.
 
 ## Scheduled runs
 

@@ -14,7 +14,7 @@ import json
 import sqlite3
 import uuid
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional
 
@@ -123,6 +123,30 @@ def init_db() -> None:
                 completed_at TEXT,
                 error_message TEXT
             );
+
+            -- Run queue: work items deposited by the webapp, consumed by an
+            -- external poller (e.g. Claude Desktop / Claude Code running the
+            -- tradingagents-analyze skill). Decouples "user wants analysis"
+            -- from "LLM client runs it" — the webapp just records the ask,
+            -- the poller picks up unclaimed rows.
+            CREATE TABLE IF NOT EXISTS run_queue (
+                id TEXT PRIMARY KEY,
+                ticker TEXT NOT NULL,
+                trade_date TEXT NOT NULL,
+                mode TEXT NOT NULL DEFAULT 'analyze',  -- analyze | brief | refresh
+                options_json TEXT,                     -- free-form per-mode options
+                requested_by TEXT,                     -- 'web-ui' | 'api' | user label
+                priority INTEGER NOT NULL DEFAULT 0,   -- higher = picked first
+                status TEXT NOT NULL DEFAULT 'pending',-- pending | claimed | done | error | cancelled
+                claimed_by TEXT,                       -- worker identifier
+                claimed_at TEXT,
+                completed_at TEXT,
+                result_run_id TEXT,                    -- foreign key to runs.run_id once finished
+                error_message TEXT,
+                created_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS run_queue_status ON run_queue(status, priority DESC, created_at);
+            CREATE INDEX IF NOT EXISTS run_queue_ticker ON run_queue(ticker);
             """
         )
         # Lazy column add — older DBs created before batch support.
@@ -498,6 +522,153 @@ def runs_in_batch(batch_id: str) -> List[Dict[str, Any]]:
             (batch_id,),
         ).fetchall()
         return [dict(r) for r in rows]
+
+
+# ---------------------------------------------------------------------------
+# Run queue — external-worker handoff (used by tradingagents-analyze skill
+# running in Claude Desktop / Claude Code, or any other poller).
+# ---------------------------------------------------------------------------
+
+def new_queue_id() -> str:
+    return uuid.uuid4().hex
+
+
+def queue_request(
+    *,
+    ticker: str,
+    trade_date: str,
+    mode: str = "analyze",
+    options: Optional[Dict[str, Any]] = None,
+    requested_by: Optional[str] = None,
+    priority: int = 0,
+) -> Dict[str, Any]:
+    """Insert a new pending queue row. Returns the inserted record."""
+    qid = new_queue_id()
+    options_json = json.dumps(options or {})
+    with _conn() as c:
+        c.execute(
+            """INSERT INTO run_queue(id, ticker, trade_date, mode, options_json,
+                                     requested_by, priority, status, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?)""",
+            (qid, ticker.strip().upper(), trade_date, mode, options_json,
+             requested_by, priority, _now()),
+        )
+        row = c.execute("SELECT * FROM run_queue WHERE id=?", (qid,)).fetchone()
+        return dict(row)
+
+
+def list_queue(*, status: Optional[str] = None, limit: int = 200) -> List[Dict[str, Any]]:
+    """List queue rows. Default returns everything ordered by created_at DESC.
+    Pass status='pending' to scope to unclaimed work."""
+    with _conn() as c:
+        if status:
+            rows = c.execute(
+                """SELECT * FROM run_queue WHERE status=?
+                   ORDER BY priority DESC, created_at ASC LIMIT ?""",
+                (status, limit),
+            ).fetchall()
+        else:
+            rows = c.execute(
+                "SELECT * FROM run_queue ORDER BY created_at DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def get_queue_item(queue_id: str) -> Optional[Dict[str, Any]]:
+    with _conn() as c:
+        row = c.execute("SELECT * FROM run_queue WHERE id=?", (queue_id,)).fetchone()
+        return dict(row) if row else None
+
+
+def claim_queue_items(*, claimed_by: str, max_items: int = 5,
+                      mode: Optional[str] = None) -> List[Dict[str, Any]]:
+    """Atomically claim up to ``max_items`` pending rows for a worker.
+
+    Sets status='claimed' so a second poller doesn't double-process the
+    same work. The worker should then run the analysis and POST results
+    back, calling ``complete_queue_item`` or ``fail_queue_item`` when done.
+    Stale claims older than 30 minutes can be reverted via ``reclaim_stale``.
+    """
+    with _conn() as c:
+        if mode:
+            rows = c.execute(
+                """SELECT * FROM run_queue WHERE status='pending' AND mode=?
+                   ORDER BY priority DESC, created_at ASC LIMIT ?""",
+                (mode, max_items),
+            ).fetchall()
+        else:
+            rows = c.execute(
+                """SELECT * FROM run_queue WHERE status='pending'
+                   ORDER BY priority DESC, created_at ASC LIMIT ?""",
+                (max_items,),
+            ).fetchall()
+        claimed = []
+        for r in rows:
+            c.execute(
+                """UPDATE run_queue SET status='claimed', claimed_by=?, claimed_at=?
+                   WHERE id=? AND status='pending'""",
+                (claimed_by, _now(), r["id"]),
+            )
+            # Re-read to reflect the claim.
+            updated = c.execute(
+                "SELECT * FROM run_queue WHERE id=?", (r["id"],)
+            ).fetchone()
+            if updated and updated["status"] == "claimed":
+                claimed.append(dict(updated))
+        return claimed
+
+
+def complete_queue_item(queue_id: str, *, result_run_id: Optional[str] = None) -> None:
+    with _conn() as c:
+        c.execute(
+            """UPDATE run_queue SET status='done', completed_at=?, result_run_id=?
+               WHERE id=?""",
+            (_now(), result_run_id, queue_id),
+        )
+
+
+def fail_queue_item(queue_id: str, *, error: str) -> None:
+    with _conn() as c:
+        c.execute(
+            """UPDATE run_queue SET status='error', completed_at=?, error_message=?
+               WHERE id=?""",
+            (_now(), error, queue_id),
+        )
+
+
+def cancel_queue_item(queue_id: str) -> bool:
+    with _conn() as c:
+        cur = c.execute(
+            "UPDATE run_queue SET status='cancelled', completed_at=? "
+            "WHERE id=? AND status IN ('pending', 'claimed')",
+            (_now(), queue_id),
+        )
+        return cur.rowcount > 0
+
+
+def delete_queue_item(queue_id: str) -> bool:
+    with _conn() as c:
+        cur = c.execute("DELETE FROM run_queue WHERE id=?", (queue_id,))
+        return cur.rowcount > 0
+
+
+def reclaim_stale_queue_items(*, older_than_seconds: int = 1800) -> int:
+    """Revert claims older than ``older_than_seconds`` back to pending.
+
+    Use to recover from worker crashes — if a poller claimed a job and
+    never reported back, it's safe to retry after enough time.
+    Returns the number of rows reverted.
+    """
+    cutoff = (datetime.utcnow() - timedelta(seconds=older_than_seconds)
+              ).isoformat(timespec="seconds") + "Z"
+    with _conn() as c:
+        cur = c.execute(
+            """UPDATE run_queue SET status='pending', claimed_by=NULL, claimed_at=NULL
+               WHERE status='claimed' AND claimed_at < ?""",
+            (cutoff,),
+        )
+        return cur.rowcount
 
 
 def create_run_in_batch(*, run_id: str, batch_id: str, ticker: str,

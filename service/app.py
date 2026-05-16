@@ -33,6 +33,7 @@ from service.routers import (
     notes,
     planner,
     portfolio,
+    run_queue as run_queue_router,
     runs,
     settings,
     sidecars as sidecars_router,
@@ -123,6 +124,7 @@ app.include_router(news_feed.router)
 app.include_router(simulation.router)
 app.include_router(planner.router)
 app.include_router(sidecars_router.router)
+app.include_router(run_queue_router.router)
 
 
 def main() -> int:
