@@ -1,0 +1,98 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Brief",
+  "description": "Plain-English actionable trading brief. Mirrors the Pydantic model in gui/brief.py:55-116 of the TradingAgents repo. The existing webapp validates against this shape on read; invalid briefs are silently dropped.",
+  "type": "object",
+  "required": [
+    "decision",
+    "tldr",
+    "timeframe",
+    "position_size",
+    "entry_strategy",
+    "stop_loss",
+    "take_profit",
+    "triggers",
+    "key_risks",
+    "benchmark_view"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "decision": {
+      "type": "string",
+      "enum": ["Buy", "Overweight", "Hold", "Underweight", "Sell"],
+      "description": "The single-word verdict from the 5-tier rating scale."
+    },
+    "action_plain": {
+      "type": ["string", "null"],
+      "minLength": 3,
+      "description": "Plain-English action in 3-8 everyday words, layered on top of the canonical decision for readers who don't speak Overweight/Underweight. Optional."
+    },
+    "tldr": {
+      "type": "string",
+      "minLength": 20,
+      "description": "2-3 plain-English sentences leading with the action."
+    },
+    "timeframe": {
+      "type": "string",
+      "minLength": 3,
+      "description": "How long the view is expected to hold (e.g. '4-6 weeks')."
+    },
+    "position_size": {
+      "type": "string",
+      "minLength": 3,
+      "description": "Recommended portfolio weight or sizing guidance."
+    },
+    "entry_strategy": {
+      "type": "string",
+      "minLength": 5,
+      "description": "How to enter — lump sum vs scaled, with price targets."
+    },
+    "stop_loss": {
+      "type": "string",
+      "minLength": 3,
+      "description": "Condition or price level to exit if thesis is wrong."
+    },
+    "take_profit": {
+      "type": "string",
+      "minLength": 3,
+      "description": "Condition or price level to take profits / scale out."
+    },
+    "triggers": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 7,
+      "items": {
+        "type": "object",
+        "required": ["condition", "action"],
+        "additionalProperties": false,
+        "properties": {
+          "condition": {
+            "type": "string",
+            "minLength": 5,
+            "description": "Specific, measurable market/data condition."
+          },
+          "action": {
+            "type": "string",
+            "minLength": 5,
+            "description": "Concrete action to take when the condition fires."
+          }
+        }
+      }
+    },
+    "key_risks": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 5,
+      "items": {
+        "type": "string",
+        "minLength": 10,
+        "description": "Plain-English risk."
+      }
+    },
+    "benchmark_view": {
+      "type": "string",
+      "minLength": 10,
+      "description": "One sentence on expected performance vs SPY over the timeframe."
+    }
+  }
+}

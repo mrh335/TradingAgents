@@ -1,0 +1,47 @@
+# tradingagents-analyze — skill defaults
+#
+# Edit these to match your NAS setup. The publish.py script reads this file
+# at runtime. Anything not set here falls back to the per-key default.
+
+# Identification — appears in the archive metadata so framework-run rows and
+# skill-run rows are distinguishable in queries.
+provider: "claude-desktop-skill"
+deep_model: "claude-opus-4-7"
+quick_model: "claude-opus-4-7"
+
+# Pipeline depth — how many bull↔bear and risk rounds.
+debate_rounds: 2
+risk_rounds: 1
+
+# Webapp URL printed after publish so the user can open the run.
+# Per docs/CLAUDE_CODE_PROMPT.md the Next.js UI is on port 3001 and the
+# FastAPI backend is on 8001 (used by the brief-pending workflow).
+webapp_base_url: "http://192.168.2.34:3001"
+api_base_url:    "http://192.168.2.34:8001"
+
+# ---------------------------------------------------------------------------
+# Server access for publish.py
+# ---------------------------------------------------------------------------
+#
+# publish.py POSTs the assembled archive + brief to the framework's
+# /runs/import endpoint. The server handles the on-disk write and SQLite
+# INSERT — the skill needs no NAS filesystem access.
+#
+# Requires the framework's FastAPI service to have the /runs/import
+# endpoint (added in service/routers/runs.py — see PR notes). If you're
+# running an older container, deploy the latest first.
+#
+# api_base_url is set above (top of this file); no extra config here.
+
+# ---------------------------------------------------------------------------
+# Token logging
+# ---------------------------------------------------------------------------
+io_tokens:
+  # Skill-side log (this directory).
+  skill_log: "io_tokens.md"
+  # Framework-side log (in the existing repo).
+  framework_log: "Z:\\My Documents\\code repo\\active\\hedge_trader\\TradingAgents\\io_tokens.md"
+  # Tokenizer used for estimation. "tiktoken" is the closest available; the
+  # estimate is approximate (±10%).
+  estimator: "tiktoken"
+  estimator_model: "cl100k_base"

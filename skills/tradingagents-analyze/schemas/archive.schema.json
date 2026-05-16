@@ -1,0 +1,95 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Archive",
+  "description": "Archive envelope (schema_version 1) consumed by gui/log_browser.py:106-111 (load_log) in the TradingAgents repo. Drop into <results_dir>/<TICKER>/TradingAgentsStrategy_logs/runs/<run_id>__<date>__<ts>.json and the webapp's History page will surface it within 30s via discover_logs().",
+  "type": "object",
+  "required": ["schema_version", "kind", "metadata", "state"],
+  "additionalProperties": true,
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "enum": [1]
+    },
+    "kind": {
+      "type": "string",
+      "enum": ["archive"]
+    },
+    "metadata": {
+      "type": "object",
+      "required": [
+        "run_id",
+        "ticker",
+        "trade_date",
+        "started_at",
+        "completed_at",
+        "provider",
+        "deep_model",
+        "quick_model",
+        "debate_rounds",
+        "risk_rounds"
+      ],
+      "additionalProperties": true,
+      "properties": {
+        "run_id": {"type": "string", "minLength": 4},
+        "ticker": {"type": "string", "minLength": 1},
+        "trade_date": {"type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$"},
+        "started_at": {"type": "string"},
+        "completed_at": {"type": "string"},
+        "provider": {"type": "string"},
+        "deep_model": {"type": "string"},
+        "quick_model": {"type": "string"},
+        "debate_rounds": {"type": "integer", "minimum": 0},
+        "risk_rounds": {"type": "integer", "minimum": 0},
+        "ensemble_index": {"type": ["integer", "null"]},
+        "ensemble_size": {"type": ["integer", "null"]},
+        "batch_id": {"type": ["string", "null"]}
+      }
+    },
+    "state": {
+      "type": "object",
+      "description": "State keys read by gui/brief.py:_state_text_for_brief (lines 165-185). Names are mandatory.",
+      "additionalProperties": true,
+      "properties": {
+        "market_report": {"type": "string"},
+        "sentiment_report": {"type": "string"},
+        "news_report": {"type": "string"},
+        "fundamentals_report": {"type": "string"},
+        "investment_debate_state": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "bull_history": {"type": "string"},
+            "bear_history": {"type": "string"},
+            "history": {"type": "string"},
+            "current_response": {"type": "string"},
+            "judge_decision": {"type": "string"},
+            "count": {"type": "integer"}
+          }
+        },
+        "investment_plan": {"type": "string"},
+        "trader_investment_plan": {"type": "string"},
+        "risk_debate_state": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "aggressive_history": {"type": "string"},
+            "conservative_history": {"type": "string"},
+            "neutral_history": {"type": "string"},
+            "history": {"type": "string"},
+            "latest_speaker": {"type": "string"},
+            "current_aggressive_response": {"type": "string"},
+            "current_conservative_response": {"type": "string"},
+            "current_neutral_response": {"type": "string"},
+            "judge_decision": {"type": "string"},
+            "count": {"type": "integer"}
+          }
+        },
+        "final_trade_decision": {"type": "string"}
+      }
+    },
+    "tool_trace": {
+      "type": "array",
+      "items": {"type": "object"}
+    }
+  }
+}
