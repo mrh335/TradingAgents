@@ -2,14 +2,30 @@
 
 from __future__ import annotations
 
+import io
+from datetime import datetime, timedelta, timezone
 from typing import List
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, HTTPException, Query
+from fastapi.responses import Response
 
 from gui import charts as charts_mod
+from gui import storage
+from tradingagents.dataflows.utils import safe_ticker_component
 from service.schemas import ChartComparisonResponse, ChartPoint
 
 router = APIRouter(prefix="/charts", tags=["charts"])
+
+# Colour palette matches the 5-tier rating vocabulary. Kept in this
+# module so both the JSON shape and the PNG renderer agree on the
+# legend semantics.
+_DECISION_COLOR = {
+    "Buy":         "#16a34a",
+    "Overweight":  "#84cc16",
+    "Hold":        "#a3a3a3",
+    "Underweight": "#f59e0b",
+    "Sell":        "#dc2626",
+}
 
 
 @router.get("/comparison", response_model=ChartComparisonResponse)
@@ -42,4 +58,194 @@ def comparison(
         benchmarks=benchmarks,
         points=points,
         realised_returns=rt_records,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Decision history — every past run for a ticker, overlaid on price
+# ---------------------------------------------------------------------------
+
+def _collect_decision_history(ticker: str, lookback_days: int) -> dict:
+    """Build the JSON payload used by both the data + PNG endpoints.
+
+    Returns:
+        {
+          "ticker", "lookback_days", "fetched_at",
+          "decisions": [{trade_date, run_id, decision, provider}, ...],
+          "price_series": [{date, close}, ...]   (yfinance — may be empty on failure)
+        }
+    """
+    ticker = safe_ticker_component(ticker)
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=lookback_days)).date()
+
+    # Decisions from the runs table (filters status=done; uses SQLite directly
+    # to avoid scanning 200 rows via list_runs's default cap).
+    rows = storage.list_runs(ticker=ticker, limit=2000)
+    decisions = []
+    for r in rows:
+        if (r.get("status") or "").lower() != "done":
+            continue
+        td = r.get("trade_date") or ""
+        try:
+            d = datetime.fromisoformat(td).date()
+        except ValueError:
+            continue
+        if d < cutoff:
+            continue
+        decisions.append({
+            "trade_date": td,
+            "run_id": r["run_id"],
+            "decision": r.get("decision"),
+            "provider": r.get("provider"),
+        })
+    decisions.sort(key=lambda x: x["trade_date"])
+
+    # Price line via gui.charts helpers (already wired up to yfinance).
+    # Reuse the comparison frame so we don't double-fetch in production.
+    try:
+        df = charts_mod.build_comparison_frame(
+            ticker, datetime.now(timezone.utc).date().isoformat(),
+            days_back=lookback_days, days_forward=0, benchmarks=(),
+        )
+    except Exception:
+        df = None
+
+    price_series: list[dict] = []
+    if df is not None and not df.empty:
+        # The frame typically has columns [ticker, SPY, QQQ...]; we only want the ticker.
+        col = ticker if ticker in df.columns else (df.columns[0] if len(df.columns) else None)
+        if col is not None:
+            for ts, val in df[col].items():
+                if val != val:  # NaN
+                    continue
+                price_series.append({
+                    "date": ts.strftime("%Y-%m-%d") if hasattr(ts, "strftime") else str(ts),
+                    "close": float(val),
+                })
+
+    return {
+        "ticker": ticker,
+        "lookback_days": lookback_days,
+        "fetched_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "decisions": decisions,
+        "price_series": price_series,
+    }
+
+
+@router.get("/decisions/{ticker}")
+def decisions_data(ticker: str, lookback_days: int = 180) -> dict:
+    """Return the raw data the decision-history chart visualises.
+
+    JSON shape:
+        {
+          "ticker": "NVDA", "lookback_days": 180,
+          "fetched_at": "...",
+          "decisions": [{trade_date, run_id, decision, provider}, ...],
+          "price_series": [{date, close}, ...]
+        }
+
+    Use this for client-side rendering (Recharts / Chart.js in the
+    Next.js webapp). For an immediately-viewable image, hit
+    ``/charts/decisions/{ticker}.png`` instead.
+    """
+    return _collect_decision_history(ticker, lookback_days)
+
+
+@router.get("/decisions/{ticker}.png")
+def decisions_png(ticker: str, lookback_days: int = 180, width: int = 1100,
+                  height: int = 500) -> Response:
+    """Server-rendered PNG of the decision-history chart.
+
+    Embed directly via ``<img src="…/charts/decisions/NVDA.png">``, or
+    open in a browser. The matplotlib dependency lives in the ``service``
+    extras (see pyproject.toml). Returns 503 if matplotlib isn't
+    importable for some reason — deployment issue, not a data issue.
+    """
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+        import matplotlib.dates as mdates
+    except ImportError as e:
+        raise HTTPException(
+            status_code=503,
+            detail=f"matplotlib not available on server: {e}. "
+                   f"Install with `pip install 'tradingagents[service]'`.",
+        )
+
+    payload = _collect_decision_history(ticker, lookback_days)
+    decisions = payload["decisions"]
+    price_series = payload["price_series"]
+
+    if not decisions and not price_series:
+        raise HTTPException(
+            status_code=404,
+            detail=f"no decisions or price data for {ticker} in the last "
+                   f"{lookback_days} days",
+        )
+
+    dpi = 110
+    fig, ax = plt.subplots(figsize=(width / dpi, height / dpi), dpi=dpi)
+
+    # Build a lookup from date string → close (so we can place decision
+    # markers on top of the price line).
+    close_by_date = {p["date"]: p["close"] for p in price_series}
+    dates = [datetime.fromisoformat(p["date"]).date() for p in price_series]
+    closes = [p["close"] for p in price_series]
+    if dates:
+        ax.plot(dates, closes, color="#1f2937", linewidth=1.3,
+                label=f"{ticker} close")
+
+    seen = set()
+    for d in decisions:
+        try:
+            day = datetime.fromisoformat(d["trade_date"]).date()
+        except ValueError:
+            continue
+        # Find closest known close on or after this date
+        y = close_by_date.get(d["trade_date"])
+        if y is None and closes:
+            # Fall back to the nearest available close to this date
+            try:
+                later = [(dt, c) for dt, c in zip(dates, closes) if dt >= day]
+                if later:
+                    y = later[0][1]
+            except Exception:
+                y = None
+        if y is None:
+            continue
+        decision = d.get("decision") or "Hold"
+        colour = _DECISION_COLOR.get(decision, "#6b7280")
+        label = decision if decision not in seen else None
+        seen.add(decision)
+        ax.scatter([day], [y], s=140, c=colour, edgecolors="black",
+                   linewidths=0.8, zorder=10, label=label)
+
+    today = datetime.now(timezone.utc).date()
+    ax.axvline(today, color="#6b7280", linestyle="--", linewidth=0.8,
+               label="today")
+
+    ax.set_title(f"{ticker} — price & decision history ({lookback_days}d)")
+    ax.set_ylabel("Price ($)")
+    ax.xaxis.set_major_locator(mdates.AutoDateLocator())
+    ax.xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m-%d"))
+    fig.autofmt_xdate()
+    ax.grid(alpha=0.3)
+    ax.legend(loc="best", fontsize=8, framealpha=0.9)
+    fig.tight_layout()
+
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", dpi=dpi)
+    plt.close(fig)
+
+    return Response(
+        content=buf.getvalue(),
+        media_type="image/png",
+        headers={
+            # Lightly cache so quick page refreshes don't re-render. New
+            # runs invalidate naturally — most viewers will hit the URL
+            # after they know there's a new run.
+            "Cache-Control": "public, max-age=60",
+            "X-Decisions-Count": str(len(decisions)),
+        },
     )
