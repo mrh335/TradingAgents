@@ -1,20 +1,23 @@
-"""Runs: create, list, drilldown, cancel, and live-streaming WebSocket."""
+"""Runs: create, list, drilldown, cancel, import, and live-streaming WebSocket."""
 
 from __future__ import annotations
 
 import asyncio
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional
 
 from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 
+from gui import sidecars as sidecars_helpers
 from gui import storage
 from gui.log_browser import discover_logs, load_archive_full, load_log
+from tradingagents.default_config import DEFAULT_CONFIG
 from tradingagents.dataflows.utils import safe_ticker_component
 from service.runner_pool import pool
-from service.schemas import RunCreateRequest, RunDetail, RunSummary
+from service.schemas import RunCreateRequest, RunDetail, RunImportRequest, RunSummary
 
 router = APIRouter(prefix="/runs", tags=["runs"])
 
@@ -47,6 +50,125 @@ def create_run(req: RunCreateRequest) -> RunSummary:
 
     db_row = storage.get_run(run_id) or {}
     return RunSummary(**db_row)
+
+
+@router.post("/import", response_model=RunSummary)
+def import_run(req: RunImportRequest) -> RunSummary:
+    """Import a complete run produced outside the framework.
+
+    Writes the archive + (optional) brief sidecar to the same on-disk
+    location the framework writes its own runs to, and INSERTs a row into
+    the ``runs`` table with status='done'. After this returns, the run is
+    indistinguishable from a framework-generated one in every read path —
+    History page, search, sidecar API, brief API, etc.
+
+    Use this from external clients (e.g. a Claude Code skill) that have
+    run the multi-agent pipeline themselves and want to publish the result
+    into the same UI surface as framework runs.
+
+    See ``RunImportRequest`` for the payload contract.
+    """
+    archive = req.archive
+    metadata = (archive.get("metadata") or {}) if isinstance(archive, dict) else {}
+
+    run_id = metadata.get("run_id")
+    ticker = metadata.get("ticker")
+    trade_date = metadata.get("trade_date")
+    if not run_id or not ticker or not trade_date:
+        raise HTTPException(
+            status_code=400,
+            detail="archive.metadata must include run_id, ticker, trade_date",
+        )
+
+    if not isinstance(archive.get("state"), dict):
+        raise HTTPException(
+            status_code=400,
+            detail="archive.state must be a dict (per schema_version 1)",
+        )
+
+    if archive.get("schema_version") not in (None, 1):
+        raise HTTPException(
+            status_code=400,
+            detail=f"unsupported schema_version: {archive.get('schema_version')!r}",
+        )
+
+    if storage.get_run(run_id):
+        raise HTTPException(
+            status_code=409,
+            detail=f"run_id {run_id!r} already exists; delete it first or use a fresh id",
+        )
+
+    # Path-traversal protection — same helper the regular create endpoint uses.
+    safe_ticker = safe_ticker_component(ticker)
+
+    # Compose the on-disk path identically to how the framework does it.
+    results_dir = Path(DEFAULT_CONFIG["results_dir"])
+    runs_dir = results_dir / safe_ticker / "TradingAgentsStrategy_logs" / "runs"
+    runs_dir.mkdir(parents=True, exist_ok=True)
+
+    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    archive_filename = f"{run_id}__{trade_date}__{ts}.json"
+    archive_path = runs_dir / archive_filename
+
+    try:
+        archive_path.write_text(
+            json.dumps(archive, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+    except OSError as e:
+        raise HTTPException(status_code=500, detail=f"could not write archive: {e}")
+
+    # Optional brief sidecar.
+    if req.brief is not None:
+        brief_sidecar = sidecars_helpers.sidecar_path(archive_path, "brief.json")
+        try:
+            brief_sidecar.write_text(
+                req.brief.model_dump_json(indent=2),
+                encoding="utf-8",
+            )
+        except OSError as e:
+            # Don't roll back the archive — partial publish is still useful.
+            raise HTTPException(status_code=500, detail=f"could not write brief: {e}")
+
+    # Optional free-form markdown brief.
+    if req.brief_markdown:
+        brief_md_sidecar = sidecars_helpers.sidecar_path(archive_path, "brief.md")
+        try:
+            brief_md_sidecar.write_text(req.brief_markdown, encoding="utf-8")
+        except OSError as e:
+            raise HTTPException(status_code=500, detail=f"could not write brief.md: {e}")
+
+    # Register in SQLite. Use the framework's create→update→finalize sequence so
+    # downstream code paths that filter by status='done' Just Work.
+    vendors = (metadata.get("vendors") or metadata.get("data_vendors") or {
+        "core_stock_apis": "external",
+        "technical_indicators": "external",
+        "fundamental_data": "external",
+        "news_data": "external",
+    })
+    storage.create_run(
+        run_id=run_id,
+        ticker=safe_ticker,
+        trade_date=trade_date,
+        provider=metadata.get("provider", "external"),
+        deep_model=metadata.get("deep_model", "external"),
+        quick_model=metadata.get("quick_model", "external"),
+        debate_rounds=int(metadata.get("debate_rounds", 0) or 0),
+        risk_rounds=int(metadata.get("risk_rounds", 0) or 0),
+        vendors=vendors,
+    )
+    storage.update_run_stats(
+        run_id,
+        llm_calls=int(metadata.get("llm_calls", 0) or 0),
+        tool_calls=int(metadata.get("tool_calls", 0) or 0),
+        tokens_in=int(metadata.get("tokens_in", 0) or 0),
+        tokens_out=int(metadata.get("tokens_out", 0) or 0),
+    )
+    decision = req.brief.decision if req.brief is not None else None
+    storage.finalize_run(run_id, decision=decision, log_path=str(archive_path))
+
+    row = storage.get_run(run_id) or {}
+    return RunSummary(**row)
 
 
 @router.get("", response_model=List[RunSummary])

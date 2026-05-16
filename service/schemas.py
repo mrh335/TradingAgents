@@ -37,6 +37,45 @@ class RunCreateRequest(BaseModel):
     )
 
 
+class RunImportRequest(BaseModel):
+    """Import a complete run produced outside the framework.
+
+    Use case: an external client (e.g. a Claude Code skill) has run the full
+    multi-agent analysis itself and wants the result to surface in the same
+    History UI as framework-generated runs. POST the assembled archive +
+    optional brief; the server writes the archive file under
+    ``<results_dir>/<TICKER>/TradingAgentsStrategy_logs/runs/`` (the same
+    location the framework writes), writes any brief as a sidecar next to
+    it, and INSERTs a ``runs`` row marked status='done' so it shows up
+    everywhere a framework run does (History page, search, sidecar API).
+
+    The archive must conform to schema_version 1 (see ``gui/log_browser.py``
+    ``load_log()``). The brief, if provided, is validated against the
+    ``Brief`` model. ``brief_markdown`` is the free-form fallback when the
+    structured shape can't be filled cleanly.
+
+    Idempotency: the endpoint rejects (409) if ``metadata.run_id`` already
+    exists in the DB. To overwrite an existing run, delete it first via
+    DELETE /runs/{run_id}.
+    """
+
+    archive: Dict[str, Any] = Field(
+        description=(
+            "schema_version 1 archive envelope: "
+            "{schema_version, kind, metadata, state, tool_trace}. "
+            "metadata must include run_id, ticker, trade_date."
+        ),
+    )
+    brief: Optional[Brief] = Field(
+        default=None,
+        description="Structured Brief sidecar. Validated; written as <basename>.brief.json.",
+    )
+    brief_markdown: Optional[str] = Field(
+        default=None,
+        description="Free-form markdown brief. Written as <basename>.brief.md.",
+    )
+
+
 class RunSummary(BaseModel):
     """One row of the runs table — what the History page lists."""
     run_id: str

@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from gui import sidecars
 from gui import storage
@@ -173,6 +173,70 @@ def submit_brief(run_id: str, brief: Brief) -> dict:
 
 class MarkdownBrief(BaseModel):
     markdown: str
+
+
+class MarkdownSidecar(BaseModel):
+    """Generic markdown sidecar payload — for kinds other than `brief.md`.
+
+    The brief endpoint exists separately because it has request-marker
+    semantics tied to it (clears the *.brief.request.md marker on save).
+    This endpoint just writes the file; no marker behavior.
+    """
+    kind: str = Field(
+        min_length=1, max_length=64,
+        description=(
+            "Sidecar kind without leading dot. Must match "
+            "``^[a-z0-9._-]+\\.md$``. Examples: analysis.md, chat.md, "
+            "portfolio.md, ensemble.md."
+        ),
+    )
+    content: str = Field(min_length=1)
+
+
+@router.post("/run/{run_id}/sidecar/markdown")
+def submit_markdown_sidecar(run_id: str, body: MarkdownSidecar) -> dict:
+    """Write any markdown sidecar (``<basename>.<kind>``) to a run.
+
+    Generic counterpart to ``/brief/markdown`` — lets external clients
+    publish ``analysis.md``, ``portfolio.md``, ``ensemble.md``, or any
+    other markdown sidecar kind alongside a run's archive. Existing kinds
+    documented in ``gui/sidecars.py`` (``brief.json``, ``brief.md``,
+    ``analysis.md``, ``chat.md``); new kinds are accepted without
+    server-side registration as long as they pass the kind validation.
+
+    Used by the ``tradingagents-analyze`` Claude skill's
+    ``publish_portfolio.py`` to attach a batch-level synthesis to every
+    run in a multi-ticker or ensemble batch.
+    """
+    import re
+    if not re.match(r"^[a-z0-9._-]+\.md$", body.kind):
+        raise HTTPException(
+            status_code=400,
+            detail=f"invalid kind {body.kind!r}: must match ^[a-z0-9._-]+\\.md$",
+        )
+    # Refuse to clobber the structured brief sidecar via this endpoint.
+    # brief.json should only be written via /brief; brief.md via
+    # /brief/markdown so the request-marker clear runs.
+    if body.kind in ("brief.json", "brief.md"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"use /brief or /brief/markdown for {body.kind} (request-marker semantics)",
+        )
+
+    row = storage.get_run(run_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="run not found")
+    archive_path = row.get("log_path")
+    if not archive_path or not Path(archive_path).exists():
+        raise HTTPException(status_code=409, detail="run has no on-disk archive yet")
+
+    sidecar = sidecars.sidecar_path(archive_path, body.kind)
+    try:
+        sidecar.write_text(body.content, encoding="utf-8")
+    except OSError as e:
+        raise HTTPException(status_code=500, detail=f"write failed: {e}")
+
+    return {"saved": str(sidecar), "kind": body.kind}
 
 
 @router.post("/run/{run_id}/brief/markdown")
