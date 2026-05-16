@@ -10,6 +10,7 @@ import { Markdown } from "@/components/Markdown";
 import { BriefPanel } from "@/components/BriefPanel";
 import { ChartComparison } from "@/components/ChartComparison";
 import { ChatPanel } from "@/components/ChatPanel";
+import { DecisionHistoryChart } from "@/components/DecisionHistoryChart";
 import { ExportPanel } from "@/components/ExportPanel";
 
 const SECTION_TABS = [
@@ -74,6 +75,11 @@ export default function RunDetailPage() {
       <section>
         <h2 className="text-lg font-semibold mb-3">vs S&amp;P 500 / Nasdaq-100</h2>
         <ChartComparison ticker={run.ticker} tradeDate={run.trade_date} />
+      </section>
+
+      <section>
+        <h2 className="text-lg font-semibold mb-3">Decision history for {run.ticker}</h2>
+        <DecisionHistoryChart ticker={run.ticker} />
       </section>
 
       <section>

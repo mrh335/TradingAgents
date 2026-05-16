@@ -17,6 +17,7 @@ const NAV = [
   { href: "/batch", label: "Batch" },
   { href: "/history", label: "History" },
   { href: "/calendar", label: "Calendar" },
+  { href: "/trends", label: "Trends" },
   { href: "/news", label: "News" },
   { href: "/simulation", label: "Simulation" },
   { href: "/notes", label: "Notes" },

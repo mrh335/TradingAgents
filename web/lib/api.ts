@@ -231,6 +231,19 @@ export const Charts = {
     (params.benchmarks ?? ["SPY", "QQQ"]).forEach((b) => qp.append("benchmarks", b));
     return request<ChartComparisonResponse>(`/charts/comparison?${qp}`);
   },
+  decisions: (ticker: string, lookbackDays: number = 180) =>
+    request<{
+      ticker: string;
+      lookback_days: number;
+      fetched_at: string;
+      decisions: Array<{
+        trade_date: string;
+        run_id: string;
+        decision: string | null;
+        provider: string | null;
+      }>;
+      price_series: Array<{ date: string; close: number }>;
+    }>(`/charts/decisions/${encodeURIComponent(ticker)}?lookback_days=${lookbackDays}`),
 };
 
 // ---- Exports ------------------------------------------------------------
