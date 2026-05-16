@@ -58,6 +58,24 @@ class Brief(BaseModel):
     decision: str = Field(
         description="The single-word verdict: BUY, SELL, HOLD, REDUCE, AVOID, or WATCH."
     )
+    action_plain: Optional[str] = Field(
+        default=None,
+        description=(
+            "Plain-English action in 3-8 everyday words for a non-finance "
+            "reader (e.g. a software engineer who doesn't trade). NO Wall "
+            "Street jargon — no 'Overweight', no 'tranche', no 'accumulate'. "
+            "Map the canonical decision like so:\n"
+            "  Buy         → 'buy a starter position'\n"
+            "  Overweight  → 'add more than usual'\n"
+            "  Hold        → 'keep what you have, no new money'\n"
+            "  Underweight → 'trim about half'\n"
+            "  Sell        → 'sell out completely'\n"
+            "OPTIONAL ONLY for backwards-compat with pre-2026-05-15 briefs; "
+            "ALWAYS fill it in new briefs. The Brief panel surfaces this "
+            "directly under the decision header for readers who don't speak "
+            "5-tier rating vocabulary."
+        ),
+    )
     tldr: str = Field(
         description=(
             "2-3 sentence plain-English summary a non-investor would understand. "
@@ -121,8 +139,14 @@ class Brief(BaseModel):
             for t in self.triggers
         ) or "_(none extracted)_"
         risks_md = "\n".join(f"- {r.strip()}" for r in self.key_risks) or "_(none)_"
+        # Plain-English action lives just under the rating header for readers
+        # who don't speak Overweight/Underweight.
+        plain_header = (
+            f"_{self.action_plain.strip()}_\n\n" if self.action_plain else ""
+        )
         return (
             f"### {self.decision}\n\n"
+            f"{plain_header}"
             f"{self.tldr.strip()}\n\n"
             f"**Timeframe:** {self.timeframe.strip()}  \n"
             f"**Position size:** {self.position_size.strip()}  \n"
@@ -145,12 +169,39 @@ _PROMPT_HEADER = (
     "technical indicators, a bull/bear debate, a trader plan, and a "
     "risk-management debate, ending with a final Portfolio Manager "
     "decision.\n\n"
-    "Your job: read the full analysis below and produce a structured brief "
-    "a non-expert investor can act on. Quote specific prices, levels, and "
-    "timeframes from the analysis whenever it gives them. If the analysis "
-    "is silent on a field, give the most reasonable inference based on the "
-    "rest of the content (don't say 'not specified' — make the call). Keep "
-    "all language plain and free of jargon.\n"
+    "## Audience\n"
+    "Write for a **software engineer who is not a finance person**. They "
+    "understand percentages, ratios, and basic stats but DO NOT know "
+    "Wall-Street vocabulary. Examples of the level: someone who can read "
+    "Python or React but has never traded options.\n\n"
+    "## Vocabulary rules (strict)\n"
+    "- Use the canonical 5-tier ``decision`` (Buy / Overweight / Hold / "
+    "Underweight / Sell) — this is the schema and can't change — but ALSO "
+    "fill the ``action_plain`` field with 3-8 everyday words. Examples:\n"
+    "    Buy         → 'buy a starter position'\n"
+    "    Overweight  → 'add more than usual'\n"
+    "    Hold        → 'keep what you have, no new money'\n"
+    "    Underweight → 'trim about half'\n"
+    "    Sell        → 'sell out completely'\n"
+    "- Banned-without-parenthetical-translation: Overweight, Underweight, "
+    "PEG, EV/EBITDA, beta, alpha, RSI, MACD, MA crossover, Sharpe, drawdown, "
+    "MOC, tranche. If you must use them, put the plain meaning in "
+    "parentheses immediately after. e.g. 'PEG of 0.63 (cheaper than a "
+    "fairly-priced stock; lower is better here)'.\n"
+    "- Specific dollar prices and percentages stay as-is — those are "
+    "concrete, not jargon. Quote them when the analysis gives them.\n"
+    "- ``tldr`` leads with the action a person would actually take, in one "
+    "sentence. Second sentence (if needed) explains why in plain terms.\n"
+    "- ``key_risks`` are 'what could go wrong' written in everyday English. "
+    "No 'multiple compression', no 'sector rotation', no 'mean reversion'.\n\n"
+    "## Process\n"
+    "Read the full analysis below and produce a structured brief. Quote "
+    "specific prices, levels, and timeframes from the analysis whenever it "
+    "gives them. If the analysis is silent on a field, give the most "
+    "reasonable inference based on the rest of the content (don't say "
+    "'not specified' — make the call). When the underlying analysis is "
+    "contradictory or thin (often the case with smaller local models), "
+    "say so honestly in ``tldr`` and default ``decision`` to Hold.\n"
 )
 
 
