@@ -151,18 +151,49 @@ never overwrites a brief.json that Claude Code wrote.
 
 ## Conventions for good briefs
 
-- **Quote specific prices/levels from the analysis when given.** If the
-  Portfolio Manager said "stop at $183 (200-day SMA)", use those exact
-  numbers in `stop_loss`.
-- **5-tier vocabulary for `decision`.** Don't invent new ratings;
-  `"Accumulate"` is `Buy`, `"Reduce"` is `Underweight`, `"Avoid"` is `Sell`.
-- **`tldr` leads with the action.** "Initiate a 4% position in three
-  tranches" beats "After considering the analysis, one might…".
-- **Triggers are concrete and measurable.** "MACD bullish crossover
-  while RSI < 70" beats "if momentum improves".
-- **Key risks are plain English.** Not "elevated multiple compression
-  risk during late-cycle dynamics" — try "stock could drop sharply if
-  the AI capex story slows down".
+### Audience
+Write for a **software engineer who is not a finance person.** They
+understand percentages, ratios, and basic stats but DO NOT know Wall
+Street vocabulary. Think someone who reads Python or React but has never
+traded options.
+
+### Vocabulary rules (strict)
+
+- **Decision** stays in the 5-tier schema (Buy/Overweight/Hold/Underweight/Sell)
+  but ALSO fill `action_plain` with 3-8 everyday words:
+    Buy         → 'buy a starter position'
+    Overweight  → 'add more than usual'
+    Hold        → 'keep what you have, no new money'
+    Underweight → 'trim about half'
+    Sell        → 'sell out completely'
+- **Banned without a parenthetical translation**: Overweight, Underweight,
+  PEG, EV/EBITDA, beta, alpha, RSI, MACD, MA crossover, Sharpe, drawdown,
+  MOC, tranche. If you must use them, put plain English in parens right
+  after: `"PEG of 0.63 (cheaper than a fairly-priced stock — lower is
+  better here)"`.
+- **Specific dollar prices and percentages stay as-is.** Those are
+  concrete numbers, not jargon. Quote them when the analysis gives them.
+  E.g. "stop at $183 (200-day SMA)" or "20% upside if Q3 hits guidance".
+- **Synonym map** when the analysis uses non-canonical vocab:
+  Accumulate/Bullish/Long → Buy. Reduce/Trim → Underweight.
+  Avoid/Short/Exit → Sell. Neutral/Wait → Hold.
+
+### Field conventions
+
+- **`tldr`** leads with the action a person would actually take, in
+  one sentence. Optional second sentence explains why in plain terms.
+  "Buy a starter position and add more if it pulls back to $190" beats
+  "After considering the analysis, one might initiate a modest position."
+- **`triggers`** are concrete and measurable with specific numbers.
+  "Stock closes below $183 for 2 days in a row → sell out" beats
+  "if momentum weakens, reduce exposure". Use everyday language for the
+  condition too.
+- **`key_risks`** are 'what could go wrong' written in everyday English.
+  "AI spending slows and demand for chips drops" beats "elevated multiple
+  compression risk during late-cycle dynamics".
+- **`benchmark_view`** says whether this is expected to beat just-buying-SPY,
+  and roughly by how much. "Probably matches SPY — there's not much edge
+  here over a passive index buy" is a valid answer if the analysis is thin.
 
 ---
 
