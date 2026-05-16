@@ -129,6 +129,33 @@ services:
     profiles:
       - ollama
 
+  # ---- Cloudflare Tunnel (exposes the API publicly over HTTPS) --------
+  # Lets Anthropic Cowork (or any cloud-hosted Claude session) reach the
+  # API without VPN or port-forwarding. Two ways to use this:
+  #
+  # PERMANENT (recommended): create a named tunnel via the Cloudflare
+  # dashboard, copy the token into .env as CLOUDFLARED_TOKEN, then:
+  #     docker compose --profile tunnel up -d cloudflared
+  # The tunnel URL is whatever public hostname you map in the dashboard.
+  #
+  # QUICK (no account, ephemeral URL): leave CLOUDFLARED_TOKEN empty and
+  # the container falls back to a try-cloudflare quick tunnel. The URL
+  # appears in `docker compose logs cloudflared` and changes on restart.
+  #
+  # See docs/COWORK.md for the full setup walk-through.
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: tradingagents-cloudflared
+    restart: unless-stopped
+    command: >-
+      ${CLOUDFLARED_CMD:-tunnel --no-autoupdate --url http://api:8000}
+    environment:
+      - TUNNEL_TOKEN=${CLOUDFLARED_TOKEN:-}
+    depends_on:
+      - api
+    profiles:
+      - tunnel
+
 volumes:
   tradingagents_data:
   ollama_data:

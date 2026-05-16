@@ -2,7 +2,7 @@
 name: tradingagents-briefs
 description: |
   Process pending brief requests for the TradingAgents webapp at
-  http://192.168.2.34:8001 — no API tokens spent. The webapp drops marker
+  $API — no API tokens spent. The webapp drops marker
   files when the user wants a plain-English brief generated for a completed
   run. This skill reads those markers via the API, fetches each run's
   archive, builds a structured Brief, and POSTs it back. Briefs are
@@ -31,17 +31,24 @@ all you need.
 
 ## Network target
 
-API base: `http://192.168.2.34:8001`
+**API base** — resolves in this priority order:
 
-If the API isn't reachable from the local LAN, stop and tell the user
-to check that they're on the same network as the NAS — don't fabricate
+1. The `TRADINGAGENTS_API` environment variable, if set (Cowork or any
+   off-LAN session — usually set to a Cloudflare Tunnel hostname like
+   `https://tradingagents.example.com`).
+2. `http://192.168.2.34:8001` — the default LAN address of the NAS.
+
+All `curl`/HTTP examples below use `$API` as shorthand for the base —
+substitute the resolved value. If the resolved base isn't reachable,
+stop and tell the user to check connectivity (LAN session: same Wi-Fi;
+Cowork session: tunnel up at `docs/COWORK.md`'s steps). Don't fabricate
 work or assume what the runs say.
 
 ## Procedure
 
 ### Step 1 — Discover work
 
-GET `http://192.168.2.34:8001/sidecars/pending`
+GET `$API/sidecars/pending`
 
 Response is a list of:
 ```json
@@ -67,7 +74,7 @@ list before continuing.
 
 ### Step 2 — For each pending request, fetch the archive
 
-GET `http://192.168.2.34:8001/sidecars/run/{run_id}`
+GET `$API/sidecars/run/{run_id}`
 
 Response includes:
 ```json
@@ -139,7 +146,7 @@ except where noted:
 
 ### Step 4 — Submit
 
-POST `http://192.168.2.34:8001/sidecars/run/{run_id}/brief`
+POST `$API/sidecars/run/{run_id}/brief`
 - Content-Type: application/json
 - Body: the Brief object built in Step 3
 
@@ -154,13 +161,16 @@ GET `/sidecars/pending` once more to confirm the queue is now empty
 Final response to the user:
 - One line per processed run with run_id (first 8 chars), ticker, and
   the decision you submitted
-- A link to view the result: `http://192.168.2.34:3001/history/{run_id}`
+- A link to view the result. The base URL resolves in this priority:
+  1. `TRADINGAGENTS_WEB` env var if set (Cowork or remote sessions).
+  2. `http://192.168.2.34:3001` — the LAN webapp address.
+  Then append `/history/{run_id}`.
 - If any submission failed, the run_id and the error
 
 Format:
 ```
-abc12345  NVDA   Buy        (4-6 weeks)  → http://192.168.2.34:3001/history/abc12345...
-def67890  MSFT   Overweight (long-term)  → http://192.168.2.34:3001/history/def67890...
+abc12345  NVDA   Buy        (4-6 weeks)  → $WEB/history/abc12345...
+def67890  MSFT   Overweight (long-term)  → $WEB/history/def67890...
 ```
 
 ---
