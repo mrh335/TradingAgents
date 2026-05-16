@@ -152,10 +152,13 @@ never overwrites a brief.json that Claude Code wrote.
 ## Conventions for good briefs
 
 ### Audience
-Write for a **software engineer who is not a finance person.** They
-understand percentages, ratios, and basic stats but DO NOT know Wall
-Street vocabulary. Think someone who reads Python or React but has never
-traded options.
+Write for a **mechanical engineer who is not a finance person.** They
+understand percentages, ratios, units, tolerances, and basic stats but
+DO NOT know Wall Street vocabulary. Think someone who reads engineering
+specs and runs FEA simulations but has never traded options. Analogies
+from physics / engineering are welcome when they clarify something —
+e.g. "volatility is like vibration amplitude" or "expected return is
+the mean of the distribution, not a guarantee."
 
 ### Vocabulary rules (strict)
 
