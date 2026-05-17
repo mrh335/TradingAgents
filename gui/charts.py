@@ -147,19 +147,18 @@ def build_absolute_price_history(
             if a > 0:
                 dividends.append({"date": ts.strftime("%Y-%m-%d"), "amount": a})
 
-    # Back-adjust the raw Close for splits ONLY. Walk newest → oldest;
-    # every time we cross a split with ratio R, divide all prior prices
-    # by R. Result: the historical line uses post-split share counts so
-    # there are no fake step-down gaps at split dates.
-    close = df["Close"].astype(float).copy()
-    if splits:
-        # iterate in chronological order, applying each split to all rows
-        # strictly *before* that date.
-        for s in sorted(splits, key=lambda x: x["date"]):
-            split_ts = pd.Timestamp(s["date"])
-            mask = close.index < split_ts
-            close.loc[mask] = close.loc[mask] / s["ratio"]
-
+    # Modern yfinance (0.2.x) with auto_adjust=False already returns the
+    # "Close" column as **split-adjusted but NOT dividend-adjusted** —
+    # exactly the shape we want: continuous through stock splits, but
+    # preserving the actual share-count prices the stock traded at on
+    # each historical date. (The fully-adjusted, dividend-back-adjusted
+    # version lives in "Adj Close", which we don't use.)
+    #
+    # Earlier versions of yfinance returned raw Close and required
+    # caller-side back-adjustment; doing both now would double-adjust
+    # (a 10-for-1 split would show pre-split prices at 1/100 of raw,
+    # not 1/10). So we just trust the Close column.
+    close = df["Close"].astype(float)
     price_series = [
         {"date": ts.strftime("%Y-%m-%d"), "close": round(float(v), 4)}
         for ts, v in close.items()
