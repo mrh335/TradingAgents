@@ -480,10 +480,73 @@ export default function RunPage() {
 }
 
 /**
- * Model field. For ollama provider we fetch the live model list from the
- * server so the user picks from what's actually installed; for everyone
- * else we just show a free text input (the framework's catalog has dozens
- * of named models per provider — not worth maintaining a UI list).
+ * Catalogue of well-known models per provider. Used to populate the model
+ * dropdown for non-Ollama providers. Picking ``__other__`` reveals a free
+ * text input so any model name still works (e.g. a brand-new release the
+ * dropdown hasn't been updated for, or a custom fine-tune).
+ *
+ * Keep entries roughly ordered "best/biggest" → "fastest/cheapest".
+ */
+const MODEL_CATALOG: Record<string, { value: string; label: string }[]> = {
+  anthropic: [
+    { value: "claude-opus-4-7", label: "claude-opus-4-7 — top tier, slowest, most expensive" },
+    { value: "claude-sonnet-4-6", label: "claude-sonnet-4-6 — balanced (default deep)" },
+    { value: "claude-sonnet-4-5", label: "claude-sonnet-4-5 — prior generation" },
+    { value: "claude-haiku-4-5", label: "claude-haiku-4-5 — fast + cheap (default quick)" },
+  ],
+  openai: [
+    { value: "gpt-5", label: "gpt-5 — top tier (when available on your key)" },
+    { value: "gpt-4o", label: "gpt-4o — multimodal, balanced" },
+    { value: "gpt-4-turbo", label: "gpt-4-turbo" },
+    { value: "gpt-4", label: "gpt-4 — slower, more deliberate" },
+    { value: "gpt-4o-mini", label: "gpt-4o-mini — fast + cheap" },
+    { value: "o1", label: "o1 — reasoning-tuned" },
+    { value: "o1-mini", label: "o1-mini — reasoning-tuned, cheaper" },
+  ],
+  google: [
+    { value: "gemini-2.5-pro", label: "gemini-2.5-pro — top tier" },
+    { value: "gemini-2-pro", label: "gemini-2-pro" },
+    { value: "gemini-2-flash", label: "gemini-2-flash — fast" },
+    { value: "gemini-1.5-pro", label: "gemini-1.5-pro" },
+    { value: "gemini-1.5-flash", label: "gemini-1.5-flash — cheap" },
+  ],
+  xai: [
+    { value: "grok-3", label: "grok-3" },
+    { value: "grok-2", label: "grok-2" },
+    { value: "grok-2-mini", label: "grok-2-mini — cheap" },
+  ],
+  deepseek: [
+    { value: "deepseek-r1", label: "deepseek-r1 — reasoning" },
+    { value: "deepseek-v3", label: "deepseek-v3" },
+    { value: "deepseek-chat", label: "deepseek-chat" },
+  ],
+  qwen: [
+    { value: "qwen-max", label: "qwen-max" },
+    { value: "qwen-plus", label: "qwen-plus" },
+    { value: "qwen-turbo", label: "qwen-turbo — cheap" },
+  ],
+  glm: [
+    { value: "glm-4-plus", label: "glm-4-plus" },
+    { value: "glm-4", label: "glm-4" },
+    { value: "glm-4-flash", label: "glm-4-flash — cheap" },
+  ],
+  openrouter: [
+    { value: "anthropic/claude-sonnet-4-6", label: "anthropic/claude-sonnet-4-6" },
+    { value: "anthropic/claude-haiku-4-5", label: "anthropic/claude-haiku-4-5" },
+    { value: "openai/gpt-4o", label: "openai/gpt-4o" },
+    { value: "google/gemini-2-pro", label: "google/gemini-2-pro" },
+    { value: "meta-llama/llama-3.3-70b-instruct", label: "meta-llama/llama-3.3-70b-instruct" },
+  ],
+};
+
+const OTHER_SENTINEL = "__other__";
+
+/**
+ * Model field. For Ollama we fetch the live model list from the server so
+ * the user picks from what's actually installed. For known providers we
+ * show a curated dropdown plus an "Other (custom)" option that reveals a
+ * free text input — gives a discoverable picker for common models without
+ * locking out brand-new releases or custom fine-tunes.
  */
 function ModelField({
   label,
@@ -535,15 +598,47 @@ function ModelField({
       </div>
     );
   }
+
+  const catalog = MODEL_CATALOG[provider] ?? [];
+  const valueIsInCatalog = !!catalog.find((m) => m.value === value);
+  // Show free-text input either when "Other" is selected from the picker,
+  // or when the current value isn't in the catalog (e.g. user typed a
+  // model the dropdown doesn't know about, or there's no catalog yet).
+  const showCustom = !valueIsInCatalog;
+
   return (
     <div>
       <label className="label">{label}</label>
-      <input
+      <select
         className="input w-full"
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        required
-      />
+        value={showCustom ? OTHER_SENTINEL : value}
+        onChange={(e) => {
+          const v = e.target.value;
+          if (v === OTHER_SENTINEL) {
+            // Reveal the text input. Don't clear `value` so the user can
+            // edit whatever they had.
+            onChange(value || "");
+          } else {
+            onChange(v);
+          }
+        }}
+      >
+        {catalog.map((m) => (
+          <option key={m.value} value={m.value}>
+            {m.label}
+          </option>
+        ))}
+        <option value={OTHER_SENTINEL}>Other (custom)…</option>
+      </select>
+      {showCustom && (
+        <input
+          className="input w-full mt-1 text-sm"
+          placeholder="Type any model name your provider supports"
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          required
+        />
+      )}
     </div>
   );
 }

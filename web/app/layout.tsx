@@ -24,6 +24,7 @@ const NAV = [
   { href: "/notes", label: "Notes" },
   { href: "/memory", label: "Memory" },
   { href: "/settings", label: "Settings" },
+  { href: "/docs", label: "Help / Docs" },
 ];
 
 export default function RootLayout({
