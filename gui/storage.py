@@ -141,6 +141,28 @@ def init_db() -> None:
             );
             CREATE INDEX IF NOT EXISTS trading_restrictions_ticker ON trading_restrictions(ticker, start_date);
 
+            -- Per-ticker analysis schedules. Each row is one (ticker, cron)
+            -- pair that the background scheduler in service/scheduler.py
+            -- evaluates every minute. When due, it POSTs a queue item to
+            -- /run-queue with the row's mode + options. Composes with the
+            -- existing Claude-Desktop drain cron — schedules push work in,
+            -- the drain cron pulls it out.
+            CREATE TABLE IF NOT EXISTS ticker_schedules (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ticker TEXT NOT NULL,
+                cron_expression TEXT NOT NULL,    -- 5-field cron, local TZ
+                mode TEXT NOT NULL DEFAULT 'analyze',
+                options_json TEXT,                 -- worker options (provider, models, etc.)
+                enabled INTEGER NOT NULL DEFAULT 1,
+                notes TEXT,                        -- user-facing label e.g. "weekday morning refresh"
+                last_fired_at TEXT,                -- ISO timestamp of last successful fire
+                last_queue_id TEXT,                -- run_queue.id of the last-created item
+                last_error TEXT,                   -- if last fire failed, the message
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS ticker_schedules_enabled ON ticker_schedules(enabled, ticker);
+
             -- Run queue: work items deposited by the webapp, consumed by an
             -- external poller (e.g. Claude Desktop / Claude Code running the
             -- tradingagents-analyze skill). Decouples "user wants analysis"
@@ -565,6 +587,100 @@ def runs_in_batch(batch_id: str) -> List[Dict[str, Any]]:
             (batch_id,),
         ).fetchall()
         return [dict(r) for r in rows]
+
+
+# ---------------------------------------------------------------------------
+# Per-ticker schedules — the auto-run scheduler. Each row drives the
+# background loop in service/scheduler.py; when due, the loop POSTs a
+# queue item via storage.queue_request(). Composes with the existing
+# Claude-Desktop drain cron — schedules push work in, drain cron pulls
+# it out.
+# ---------------------------------------------------------------------------
+
+def list_schedules(*, enabled_only: bool = False) -> List[Dict[str, Any]]:
+    sql = "SELECT * FROM ticker_schedules"
+    if enabled_only:
+        sql += " WHERE enabled=1"
+    sql += " ORDER BY ticker, cron_expression"
+    with _conn() as c:
+        return [dict(r) for r in c.execute(sql).fetchall()]
+
+
+def get_schedule(schedule_id: int) -> Optional[Dict[str, Any]]:
+    with _conn() as c:
+        row = c.execute(
+            "SELECT * FROM ticker_schedules WHERE id=?", (schedule_id,)
+        ).fetchone()
+        return dict(row) if row else None
+
+
+def add_schedule(*, ticker: str, cron_expression: str, mode: str = "analyze",
+                  options: Optional[Dict[str, Any]] = None,
+                  enabled: bool = True, notes: Optional[str] = None) -> Dict[str, Any]:
+    now = _now()
+    with _conn() as c:
+        cur = c.execute(
+            """INSERT INTO ticker_schedules(ticker, cron_expression, mode,
+                                            options_json, enabled, notes,
+                                            created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (ticker.strip().upper(), cron_expression.strip(), mode,
+             json.dumps(options or {}), 1 if enabled else 0, notes, now, now),
+        )
+        row = c.execute(
+            "SELECT * FROM ticker_schedules WHERE id=?", (cur.lastrowid,)
+        ).fetchone()
+        return dict(row)
+
+
+def update_schedule(schedule_id: int, *,
+                     cron_expression: Optional[str] = None,
+                     mode: Optional[str] = None,
+                     options: Optional[Dict[str, Any]] = None,
+                     enabled: Optional[bool] = None,
+                     notes: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    fields = []
+    args: List[Any] = []
+    if cron_expression is not None:
+        fields.append("cron_expression=?"); args.append(cron_expression.strip())
+    if mode is not None:
+        fields.append("mode=?"); args.append(mode)
+    if options is not None:
+        fields.append("options_json=?"); args.append(json.dumps(options))
+    if enabled is not None:
+        fields.append("enabled=?"); args.append(1 if enabled else 0)
+    if notes is not None:
+        fields.append("notes=?"); args.append(notes)
+    if fields:
+        fields.append("updated_at=?"); args.append(_now())
+        args.append(schedule_id)
+        with _conn() as c:
+            c.execute(
+                f"UPDATE ticker_schedules SET {', '.join(fields)} WHERE id=?",
+                args,
+            )
+    return get_schedule(schedule_id)
+
+
+def delete_schedule(schedule_id: int) -> bool:
+    with _conn() as c:
+        cur = c.execute(
+            "DELETE FROM ticker_schedules WHERE id=?", (schedule_id,)
+        )
+        return cur.rowcount > 0
+
+
+def record_schedule_fire(schedule_id: int, *,
+                          queue_id: Optional[str] = None,
+                          error: Optional[str] = None) -> None:
+    """Mark a schedule as fired (success or failure)."""
+    with _conn() as c:
+        c.execute(
+            """UPDATE ticker_schedules
+               SET last_fired_at=?, last_queue_id=?, last_error=?, updated_at=?
+               WHERE id=?""",
+            (_now(), queue_id, error, _now(), schedule_id),
+        )
 
 
 # ---------------------------------------------------------------------------

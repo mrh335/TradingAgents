@@ -527,6 +527,53 @@ export const Dashboard = {
   },
 };
 
+// ---- Schedules (per-ticker auto-run scheduler) -------------------------
+
+export type Schedule = {
+  id: number;
+  ticker: string;
+  cron_expression: string;
+  mode: "analyze" | "brief" | "refresh";
+  options: Record<string, any>;
+  enabled: boolean;
+  notes: string | null;
+  last_fired_at: string | null;
+  last_queue_id: string | null;
+  last_error: string | null;
+  created_at: string;
+  updated_at: string;
+  next_fire_at: string | null;
+  cadence_human: string | null;
+};
+
+export const Schedules = {
+  list: () => request<Schedule[]>("/schedules"),
+  create: (req: {
+    ticker: string;
+    cron_expression: string;
+    mode?: "analyze" | "brief" | "refresh";
+    options?: Record<string, any>;
+    enabled?: boolean;
+    notes?: string;
+  }) =>
+    request<Schedule>("/schedules", { method: "POST", body: JSON.stringify(req) }),
+  update: (
+    id: number,
+    req: Partial<{
+      cron_expression: string;
+      mode: Schedule["mode"];
+      options: Record<string, any>;
+      enabled: boolean;
+      notes: string;
+    }>,
+  ) =>
+    request<Schedule>(`/schedules/${id}`, { method: "PUT", body: JSON.stringify(req) }),
+  delete: (id: number) =>
+    request<{ deleted: number }>(`/schedules/${id}`, { method: "DELETE" }),
+  fire: (id: number) =>
+    request<Schedule>(`/schedules/${id}/fire`, { method: "POST" }),
+};
+
 export const RunQueue = {
   list: (status?: QueueItem["status"]) => {
     const qs = status ? `?status=${status}` : "";

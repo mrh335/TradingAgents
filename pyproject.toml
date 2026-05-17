@@ -49,6 +49,9 @@ service = [
     # transitive resolution stays flexible; pandas already pulls a recent
     # numpy.
     "matplotlib>=3.7",
+    # croniter evaluates 5-field cron expressions for the per-ticker
+    # auto-run scheduler (service/scheduler.py). Tiny pure-Python lib.
+    "croniter>=2.0",
 ]
 
 [project.scripts]

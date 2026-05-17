@@ -37,6 +37,7 @@ from service.routers import (
     restrictions as restrictions_router,
     run_queue as run_queue_router,
     runs,
+    schedules as schedules_router,
     settings,
     sidecars as sidecars_router,
     simulation,
@@ -98,6 +99,11 @@ async def _startup() -> None:
             await broadcaster.subscribe("price", entry["ticker"])
         except Exception:
             pass
+    # Per-ticker auto-run scheduler — ticks every 60s, evaluates each
+    # enabled row in ticker_schedules and queues runs when due. See
+    # service.scheduler for the loop.
+    from service import scheduler as scheduler_service
+    loop.create_task(scheduler_service.run(interval_seconds=60))
     logger.info("TradingAgents API ready. CORS origins: %s", _allowed_origins())
 
 
@@ -131,6 +137,7 @@ app.include_router(run_queue_router.router)
 app.include_router(restrictions_router.router)
 app.include_router(tokens_router.router)
 app.include_router(dashboard_router.router)
+app.include_router(schedules_router.router)
 
 
 def main() -> int:
