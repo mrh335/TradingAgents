@@ -115,7 +115,13 @@ def list_accounts() -> List[Dict[str, Any]]:
 
 
 def list_holdings() -> Dict[str, Any]:
-    """Return the planner's holdings response.
+    """Return the planner's SimpleFIN-sourced ``Holding`` rows.
+
+    This is the per-account snapshot the aggregator (SimpleFIN) feeds in
+    directly. It misses holdings that live in the InvestmentLot ledger
+    (RSU/Stock Plan accounts where SimpleFIN doesn't expose security
+    detail), so consider it a supplement to ``list_consolidated_holdings``
+    rather than the primary source.
 
     Shape (from backend/routers/investments.py):
         {
@@ -133,6 +139,44 @@ def list_holdings() -> Dict[str, Any]:
     raw = _get("/api/investments/holdings")
     if not isinstance(raw, dict) or "holdings" not in raw:
         raise PlannerClientError(f"unexpected /api/investments/holdings shape: {type(raw)}")
+    return raw
+
+
+def list_consolidated_holdings() -> Dict[str, Any]:
+    """Return the planner's **consolidated** holdings view — the one the
+    frontend's Investments page renders.
+
+    This walks the InvestmentLot ledger (which the user populates via
+    Excel/PDF imports of RSU/Stock Plan history) and returns per-symbol
+    aggregated share counts + weighted cost basis across every account
+    that owns that ticker. It's the "single source of truth" the planner
+    intends for holdings — superset of SimpleFIN for the Stock Plan
+    accounts where SimpleFIN can't see securities detail.
+
+    Shape (from backend/routers/investment_ledger.py /summary):
+        {
+          "holdings": [
+            {"symbol":..., "shares":..., "total_cost_basis":...,
+             "current_price":..., "current_value":...,
+             "gain_loss":..., "gain_loss_pct":...,
+             "plan_type":..., "accounts":["...", "..."],
+             "change":..., "change_pct":...},
+            ...
+          ],
+          "total_value": ...,
+          "total_cost_basis": ...,
+          "owners": ["..."],
+          "symbols": ["AAPL", ...]
+        }
+
+    Returns an empty-holdings dict on any error so the caller can still
+    fall back gracefully.
+    """
+    raw = _get("/api/investment-ledger/summary")
+    if not isinstance(raw, dict) or "holdings" not in raw:
+        raise PlannerClientError(
+            f"unexpected /api/investment-ledger/summary shape: {type(raw)}"
+        )
     return raw
 
 
