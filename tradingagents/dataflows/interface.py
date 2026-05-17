@@ -23,6 +23,7 @@ from .alpha_vantage import (
     get_global_news as get_alpha_vantage_global_news,
 )
 from .alpha_vantage_common import AlphaVantageRateLimitError
+from .congress_trades import get_congress_trades as get_capitol_trades_congress_trades
 
 # Configuration and routing logic
 from .config import get_config
@@ -56,6 +57,7 @@ TOOLS_CATEGORIES = {
             "get_news",
             "get_global_news",
             "get_insider_transactions",
+            "get_congress_trades",
         ]
     }
 }
@@ -106,6 +108,14 @@ VENDOR_METHODS = {
     "get_insider_transactions": {
         "alpha_vantage": get_alpha_vantage_insider_transactions,
         "yfinance": get_yfinance_insider_transactions,
+    },
+    # Congressional stock trades — single source (Capitol Trades BFF, no auth).
+    # Same implementation for every vendor key because the data isn't
+    # available through yfinance/alpha_vantage anyway; routing through the
+    # vendor dispatcher keeps the tool surface uniform.
+    "get_congress_trades": {
+        "alpha_vantage": get_capitol_trades_congress_trades,
+        "yfinance": get_capitol_trades_congress_trades,
     },
 }
 

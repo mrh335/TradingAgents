@@ -3,6 +3,7 @@ from tradingagents.agents.utils.agent_utils import (
     build_instrument_context,
     get_balance_sheet,
     get_cashflow,
+    get_congress_trades,
     get_fundamentals,
     get_income_statement,
     get_insider_transactions,
@@ -21,12 +22,19 @@ def create_fundamentals_analyst(llm):
             get_balance_sheet,
             get_cashflow,
             get_income_statement,
+            # Smart-money signals: insider Form 4 filings (officers/directors)
+            # and STOCK Act disclosures from House/Senate members.
+            get_insider_transactions,
+            get_congress_trades,
         ]
 
         system_message = (
             "You are a researcher tasked with analyzing fundamental information over the past week about a company. Please write a comprehensive report of the company's fundamental information such as financial documents, company profile, basic company financials, and company financial history to gain a full view of the company's fundamental information to inform traders. Make sure to include as much detail as possible. Provide specific, actionable insights with supporting evidence to help traders make informed decisions."
             + " Make sure to append a Markdown table at the end of the report to organize key points in the report, organized and easy to read."
-            + " Use the available tools: `get_fundamentals` for comprehensive company analysis, `get_balance_sheet`, `get_cashflow`, and `get_income_statement` for specific financial statements."
+            + " Use the available tools: `get_fundamentals` for comprehensive company analysis, `get_balance_sheet`, `get_cashflow`, and `get_income_statement` for specific financial statements,"
+            + " `get_insider_transactions` for officer/director Form 4 buys and sells (a leading insider-conviction signal — filings appear within ~2 business days of the trade),"
+            + " and `get_congress_trades` for STOCK Act disclosures by US Senate and House members (a lagging confirmation signal — filings appear 30-45 days after the trade, so heavy clustering by members of relevant committees can corroborate fundamental theses)."
+            + " Cite specific insider names, amounts, and dates when smart-money activity is meaningful; explicitly note when activity is absent rather than skipping the topic."
             + get_language_instruction(),
         )
 

@@ -51,3 +51,27 @@ def get_insider_transactions(
         str: A report of insider transaction data
     """
     return route_to_vendor("get_insider_transactions", ticker)
+
+
+@tool
+def get_congress_trades(
+    ticker: Annotated[str, "ticker symbol"],
+    lookback_days: Annotated[int, "how many days of history to fetch (default 90)"] = 90,
+) -> str:
+    """
+    Retrieve congressional stock trading disclosures for a ticker — recent
+    buy/sell transactions reported by US House and Senate members under the
+    STOCK Act. Returns aggregated party / chamber bias plus a per-trade
+    table.
+
+    Filings are reported 30-45 days AFTER the trade, so treat heavy clusters
+    of same-direction activity as a lagging confirmation signal rather than
+    a leading indicator. A quiet window may just reflect filing lag.
+
+    Args:
+        ticker (str): Ticker symbol of the company
+        lookback_days (int): How many days of history to fetch (default 90)
+    Returns:
+        str: A markdown report with summary stats and the per-trade table
+    """
+    return route_to_vendor("get_congress_trades", ticker, lookback_days)
