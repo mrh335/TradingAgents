@@ -159,9 +159,35 @@ def init_db() -> None:
 
 @contextmanager
 def _conn() -> Iterator[sqlite3.Connection]:
+    """Open a SQLite connection with concurrency settings tuned for the
+    webapp's workload.
+
+    Default SQLite journal mode is rollback-journal (DELETE), which serializes
+    writers and blocks them behind readers — concurrent POSTs from the
+    /batch queue button instantly produce ``database is locked`` errors.
+    We enable WAL mode (one writer + many readers without blocking) and
+    set a 10-second busy-timeout so the rare contention waits instead of
+    erroring. Both are idempotent — running them on every connection is
+    cheap and the persistent mode change carries across the whole DB.
+
+    Also bumps the timeout= constructor arg from the default 5s to 10s so
+    a slow disk (or a backup task on the NAS) doesn't break the API.
+    """
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=10.0)
     conn.row_factory = sqlite3.Row
+    # WAL = concurrent readers don't block writers; one writer at a time
+    # but other connections see the last committed snapshot meanwhile.
+    # busy_timeout = if SQLite hits an internal lock, wait up to N ms
+    # before erroring instead of raising immediately.
+    try:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA busy_timeout=10000")
+        conn.execute("PRAGMA synchronous=NORMAL")  # WAL-safe; faster than FULL
+    except sqlite3.OperationalError:
+        # Older SQLite versions or read-only filesystem — fall through,
+        # the original blocking behaviour is still correct.
+        pass
     try:
         yield conn
         conn.commit()

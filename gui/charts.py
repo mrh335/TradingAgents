@@ -81,6 +81,98 @@ def build_comparison_frame(ticker: str, trade_date: str | date,
     )
 
 
+# ---------------------------------------------------------------------------
+# Absolute split-adjusted history (no normalisation, with action overlays)
+# ---------------------------------------------------------------------------
+
+def build_absolute_price_history(
+    ticker: str, lookback_days: int = 180,
+) -> Dict[str, list]:
+    """Fetch split-adjusted-but-NOT-dividend-adjusted close prices, plus the
+    split and dividend events that occurred in the window.
+
+    Why this shape (vs the percentage-normalised ``build_comparison_frame``):
+    - The Decision History / Trends chart should show actual dollar prices
+      a user would have seen if they pulled up the ticker on each historical
+      date (so the y-axis reads "$184", not "100").
+    - "Split-adjusted" means the line is continuous through stock splits —
+      no fake 50% drop on the day NVDA did its 10-for-1 in 2024.
+    - "NOT dividend-adjusted" means we don't reduce historical prices to
+      account for paid dividends. Reducing them makes the line look lower
+      than the actual trade prices ever were, which is what the user
+      wants to avoid. (yfinance's default ``auto_adjust=True`` does both;
+      we want just splits.)
+    - Splits + dividends come back as separate event lists so the frontend
+      can mark them on the chart.
+
+    Returns:
+        {
+          "price_series": [{date, close}, ...]   split-adjusted close
+          "splits":       [{date, ratio}, ...]   stock split events (ratio e.g. 10.0 for 10-for-1)
+          "dividends":    [{date, amount}, ...]  cash dividend events
+        }
+    """
+    end = date.today() + timedelta(days=1)
+    start = end - timedelta(days=lookback_days + 5)
+    try:
+        # auto_adjust=False keeps raw OHLC + gives us separate Dividends &
+        # "Stock Splits" columns. We then back-adjust only for splits.
+        df = yf.Ticker(ticker.upper()).history(
+            start=start.strftime("%Y-%m-%d"),
+            end=end.strftime("%Y-%m-%d"),
+            auto_adjust=False,
+            actions=True,
+        )
+    except Exception:
+        return {"price_series": [], "splits": [], "dividends": []}
+
+    if df is None or df.empty:
+        return {"price_series": [], "splits": [], "dividends": []}
+
+    if df.index.tz is not None:
+        df.index = df.index.tz_localize(None)
+
+    # Extract split + dividend events first (these reference RAW dates).
+    splits: List[Dict] = []
+    if "Stock Splits" in df.columns:
+        for ts, ratio in df["Stock Splits"].items():
+            r = float(ratio)
+            if r and r != 1.0:
+                splits.append({"date": ts.strftime("%Y-%m-%d"), "ratio": r})
+
+    dividends: List[Dict] = []
+    if "Dividends" in df.columns:
+        for ts, amt in df["Dividends"].items():
+            a = float(amt)
+            if a > 0:
+                dividends.append({"date": ts.strftime("%Y-%m-%d"), "amount": a})
+
+    # Back-adjust the raw Close for splits ONLY. Walk newest → oldest;
+    # every time we cross a split with ratio R, divide all prior prices
+    # by R. Result: the historical line uses post-split share counts so
+    # there are no fake step-down gaps at split dates.
+    close = df["Close"].astype(float).copy()
+    if splits:
+        # iterate in chronological order, applying each split to all rows
+        # strictly *before* that date.
+        for s in sorted(splits, key=lambda x: x["date"]):
+            split_ts = pd.Timestamp(s["date"])
+            mask = close.index < split_ts
+            close.loc[mask] = close.loc[mask] / s["ratio"]
+
+    price_series = [
+        {"date": ts.strftime("%Y-%m-%d"), "close": round(float(v), 4)}
+        for ts, v in close.items()
+        if pd.notna(v)
+    ]
+
+    return {
+        "price_series": price_series,
+        "splits": splits,
+        "dividends": dividends,
+    }
+
+
 @st.cache_data(ttl=6 * 3600, show_spinner=False)
 def _build_comparison_frame_cached(ticker: str, trade_date: str,
                                   days_back: int, days_forward: int,

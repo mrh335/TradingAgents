@@ -144,17 +144,27 @@ export default function BatchListPage() {
     },
   });
 
-  // "Queue for Claude Desktop" — fans out one /run-queue POST per ticker.
-  // All items share a batch_label in options.notes so the user can correlate
-  // them on the /queue page (and a future worker can claim them in a single
-  // /claim call with max_items=N if it wants).
+  // "Queue for Claude Desktop" — serially POSTs one /run-queue item per
+  // ticker. Serialized (not Promise.allSettled) for two reasons:
+  // 1. SQLite is a single-writer store; firing N concurrent inserts is the
+  //    canonical recipe for "database is locked". The backend now uses WAL
+  //    + busy_timeout so contention is recoverable, but a tight loop here
+  //    is gentler regardless.
+  // 2. UX: serial gives us a real-time "queued K of N" counter and per-item
+  //    error reporting that lines up with the ticker order in the textarea.
+  // All items share a batch_label so the /queue page can group them and a
+  // worker can pull them as one logical unit if it wants.
+  const [queueProgress, setQueueProgress] = useState<{ done: number; total: number } | null>(null);
   const queueAll = useMutation({
     mutationFn: async (req: BatchCreateRequest) => {
       const batchLabel = (req.name ?? "").trim() ||
         `batch-${new Date().toISOString().slice(0, 16).replace(/[-T:]/g, "")}`;
-      const results = await Promise.allSettled(
-        req.tickers.map((ticker) =>
-          RunQueue.create({
+      const failed: { ticker: string; error: string }[] = [];
+      let ok = 0;
+      setQueueProgress({ done: 0, total: req.tickers.length });
+      for (const ticker of req.tickers) {
+        try {
+          await RunQueue.create({
             ticker,
             trade_date: req.trade_date,
             mode: "analyze",
@@ -168,18 +178,21 @@ export default function BatchListPage() {
               batch_label: batchLabel,
             },
             requested_by: `web-ui:/batch:${batchLabel}`,
-          }),
-        ),
-      );
-      const ok = results.filter((r) => r.status === "fulfilled").length;
-      const failed = results
-        .map((r, i) => (r.status === "rejected" ? { ticker: req.tickers[i], error: (r.reason as Error).message } : null))
-        .filter((x): x is { ticker: string; error: string } => x !== null);
+          });
+          ok += 1;
+        } catch (e) {
+          failed.push({ ticker, error: (e as Error).message });
+        }
+        setQueueProgress((p) => p ? { ...p, done: p.done + 1 } : null);
+      }
       return { batchLabel, total: req.tickers.length, ok, failed };
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["run-queue"] });
+      // Leave the progress counter visible briefly so the user sees the final state.
+      setTimeout(() => setQueueProgress(null), 4000);
     },
+    onError: () => setQueueProgress(null),
   });
 
   const parsed = parseTickers(tickersRaw);
@@ -299,9 +312,11 @@ export default function BatchListPage() {
               "or Claude Code) drains them later using its own LLM budget."
             }
           >
-            {queueAll.isPending
-              ? `Queueing ${parsed.length}…`
-              : `🤖 Queue ${parsed.length} for Claude Desktop`}
+            {queueAll.isPending && queueProgress
+              ? `Queueing ${queueProgress.done}/${queueProgress.total}…`
+              : queueAll.isPending
+                ? `Queueing ${parsed.length}…`
+                : `🤖 Queue ${parsed.length} for Claude Desktop`}
           </button>
           <button
             type="submit"

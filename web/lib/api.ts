@@ -243,6 +243,8 @@ export const Charts = {
         provider: string | null;
       }>;
       price_series: Array<{ date: string; close: number }>;
+      splits: Array<{ date: string; ratio: number }>;
+      dividends: Array<{ date: string; amount: number }>;
     }>(`/charts/decisions/${encodeURIComponent(ticker)}?lookback_days=${lookbackDays}`),
 };
 

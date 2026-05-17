@@ -23,6 +23,7 @@ import {
   ComposedChart,
   Legend,
   Line,
+  ReferenceLine,
   ResponsiveContainer,
   Scatter,
   Tooltip,
@@ -64,14 +65,14 @@ export function DecisionHistoryChart({ ticker }: { ticker: string }) {
     enabled: !!ticker,
   });
 
-  // Merge decisions onto the price series by date so Recharts can render
-  // both on one composed chart. Each row carries:
-  //   { date, close, decisionPrice (= close if a decision landed here), ...decisionMeta }
+  // Merge decisions + dividends onto the price series by date so Recharts can
+  // render everything on one composed chart. Each row carries:
+  //   { date, close, decisionPrice, dividendY (anchor on the price line),
+  //     decision, runId, provider, dividendAmount }
+  // Splits stay as a separate event list rendered as ReferenceLines below.
   const data = useMemo(() => {
     if (!q.data) return [];
     const priceByDate = new Map(q.data.price_series.map((p) => [p.date, p.close]));
-    // Some decisions may not have a matching trading-day close (weekend,
-    // holiday, or pre-IPO). Snap them to the nearest available close.
     const dates = q.data.price_series.map((p) => p.date).sort();
     function nearestPrice(date: string): number | null {
       if (priceByDate.has(date)) return priceByDate.get(date)!;
@@ -81,20 +82,27 @@ export function DecisionHistoryChart({ ticker }: { ticker: string }) {
       return before ? priceByDate.get(before) ?? null : null;
     }
     const decisionByDate = new Map<string, typeof q.data.decisions[0]>();
-    for (const d of q.data.decisions) {
-      decisionByDate.set(d.trade_date, d);
-    }
-    // Build a union of dates so decisions on non-trading days still get
-    // a row.
+    for (const d of q.data.decisions) decisionByDate.set(d.trade_date, d);
+    const divByDate = new Map(q.data.dividends.map((d) => [d.date, d.amount]));
+    // Union of every date that has *something* worth a row on the chart.
     const allDates = Array.from(
       new Set([
         ...q.data.price_series.map((p) => p.date),
         ...q.data.decisions.map((d) => d.trade_date),
+        ...q.data.dividends.map((d) => d.date),
       ]),
     ).sort();
+    // Anchor for dividend triangles: a fixed fraction below the lowest
+    // observed close so the triangles sit cleanly at the bottom edge of
+    // the plot area, not floating on the line.
+    const minClose = q.data.price_series.length
+      ? Math.min(...q.data.price_series.map((p) => p.close))
+      : 0;
+    const dividendAnchor = minClose > 0 ? minClose * 0.985 : 0;
     return allDates.map((date) => {
       const close = priceByDate.get(date) ?? null;
       const decision = decisionByDate.get(date);
+      const dividendAmount = divByDate.get(date) ?? null;
       return {
         date,
         close,
@@ -102,6 +110,8 @@ export function DecisionHistoryChart({ ticker }: { ticker: string }) {
         decision: decision?.decision ?? null,
         runId: decision?.run_id ?? null,
         provider: decision?.provider ?? null,
+        dividendAmount,
+        dividendY: dividendAmount != null ? dividendAnchor : null,
       };
     });
   }, [q.data]);
@@ -166,13 +176,37 @@ export function DecisionHistoryChart({ ticker }: { ticker: string }) {
               stroke="rgb(var(--muted))"
               tick={{ fontSize: 11 }}
               domain={["auto", "auto"]}
+              tickFormatter={(v) => (typeof v === "number" ? `$${v.toFixed(0)}` : v)}
+              label={{
+                value: "Price ($, split-adj)",
+                angle: -90,
+                position: "insideLeft",
+                style: { fill: "rgb(var(--muted))", fontSize: 11 },
+              }}
             />
             <Tooltip content={<DecisionTooltip />} />
-            <Legend wrapperStyle={{ fontSize: 12 }} content={<DecisionLegend />} />
+            <Legend wrapperStyle={{ fontSize: 12 }} content={<ChartLegend />} />
+            {/* Vertical lines for stock splits with ratio annotation */}
+            {(q.data.splits ?? []).map((s) => (
+              <ReferenceLine
+                key={`split-${s.date}`}
+                x={s.date}
+                stroke="#7c3aed"
+                strokeWidth={1.5}
+                strokeDasharray="0"
+                label={{
+                  value: `${s.ratio}× split`,
+                  position: "top",
+                  fill: "#7c3aed",
+                  fontSize: 10,
+                  fontWeight: 600,
+                }}
+              />
+            ))}
             <Line
               type="monotone"
               dataKey="close"
-              name={`${ticker} close`}
+              name={`${ticker} close (split-adj)`}
               stroke="rgb(var(--accent))"
               strokeWidth={1.5}
               dot={false}
@@ -182,6 +216,11 @@ export function DecisionHistoryChart({ ticker }: { ticker: string }) {
             <Scatter
               dataKey="decisionPrice"
               shape={<DecisionDot />}
+              isAnimationActive={false}
+            />
+            <Scatter
+              dataKey="dividendY"
+              shape={<DividendMarker />}
               isAnimationActive={false}
             />
             <Brush
@@ -194,6 +233,14 @@ export function DecisionHistoryChart({ ticker }: { ticker: string }) {
           </ComposedChart>
         </ResponsiveContainer>
       </div>
+
+      {/* Corporate-action summary line under the chart */}
+      {(q.data.splits.length > 0 || q.data.dividends.length > 0) && (
+        <CorporateActionsSummary
+          splits={q.data.splits}
+          dividends={q.data.dividends}
+        />
+      )}
 
       <DecisionTable decisions={q.data.decisions} />
     </div>
@@ -225,6 +272,30 @@ function DecisionDot(props: any) {
   );
 }
 
+/** Small upward triangle along the bottom of the plot area marking a
+ *  dividend payout. Tooltip on hover shows the amount per share. */
+function DividendMarker(props: any) {
+  const { cx, cy, payload } = props;
+  if (cx == null || cy == null || payload?.dividendAmount == null) return null;
+  const size = 5;
+  // Equilateral triangle pointing up, anchored on (cx, cy).
+  const points = [
+    [cx, cy - size],
+    [cx - size, cy + size * 0.7],
+    [cx + size, cy + size * 0.7],
+  ]
+    .map(([x, y]) => `${x},${y}`)
+    .join(" ");
+  return (
+    <polygon
+      points={points}
+      fill="#059669"
+      stroke="black"
+      strokeWidth={0.5}
+    />
+  );
+}
+
 function DecisionTooltip({ active, payload }: any) {
   if (!active || !payload || payload.length === 0) return null;
   const row = payload[0]?.payload ?? {};
@@ -243,6 +314,12 @@ function DecisionTooltip({ active, payload }: any) {
       {row.close != null && (
         <div>
           Close: <span className="tabular-nums">${row.close.toFixed(2)}</span>
+        </div>
+      )}
+      {row.dividendAmount != null && (
+        <div className="mt-1" style={{ color: "#059669" }}>
+          ▲ Dividend: <span className="tabular-nums">${row.dividendAmount.toFixed(4)}</span>
+          /share
         </div>
       )}
       {row.decision && (
@@ -266,8 +343,8 @@ function DecisionTooltip({ active, payload }: any) {
   );
 }
 
-/** Decision legend in 5-tier colour order. */
-function DecisionLegend() {
+/** Chart legend covering decisions + corporate-action overlays. */
+function ChartLegend() {
   return (
     <div className="flex flex-wrap gap-3 justify-center text-xs">
       {Object.entries(DECISION_COLOR).map(([decision, color]) => (
@@ -279,7 +356,105 @@ function DecisionLegend() {
           {decision}
         </span>
       ))}
+      <span className="flex items-center gap-1">
+        <span
+          className="inline-block"
+          style={{
+            width: 0,
+            height: 0,
+            borderLeft: "5px solid transparent",
+            borderRight: "5px solid transparent",
+            borderBottom: "8px solid #059669",
+          }}
+        />
+        Dividend
+      </span>
+      <span className="flex items-center gap-1">
+        <span
+          className="inline-block"
+          style={{
+            width: 2,
+            height: 12,
+            background: "#7c3aed",
+          }}
+        />
+        Stock split
+      </span>
     </div>
+  );
+}
+
+/** Compact tabular summary of every split + dividend in the window. */
+function CorporateActionsSummary({
+  splits,
+  dividends,
+}: {
+  splits: Array<{ date: string; ratio: number }>;
+  dividends: Array<{ date: string; amount: number }>;
+}) {
+  return (
+    <details className="text-xs">
+      <summary className="cursor-pointer text-muted hover:text-fg">
+        Corporate actions in window: {splits.length} split{splits.length === 1 ? "" : "s"},{" "}
+        {dividends.length} dividend{dividends.length === 1 ? "" : "s"}
+      </summary>
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-2">
+        {splits.length > 0 && (
+          <div>
+            <div className="text-muted uppercase tracking-wider text-[10px] mb-1">
+              Stock splits
+            </div>
+            <table className="w-full">
+              <tbody>
+                {splits.map((s) => (
+                  <tr key={s.date} className="border-t border-border">
+                    <td className="py-1 pr-2">{s.date}</td>
+                    <td
+                      className="py-1 text-right tabular-nums"
+                      style={{ color: "#7c3aed", fontWeight: 600 }}
+                    >
+                      {s.ratio}-for-1
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+        {dividends.length > 0 && (
+          <div>
+            <div className="text-muted uppercase tracking-wider text-[10px] mb-1">
+              Dividends (per share)
+            </div>
+            <table className="w-full">
+              <tbody>
+                {dividends
+                  .slice()
+                  .sort((a, b) => b.date.localeCompare(a.date))
+                  .map((d) => (
+                    <tr key={d.date} className="border-t border-border">
+                      <td className="py-1 pr-2">{d.date}</td>
+                      <td
+                        className="py-1 text-right tabular-nums"
+                        style={{ color: "#059669", fontWeight: 600 }}
+                      >
+                        ${d.amount.toFixed(4)}
+                      </td>
+                    </tr>
+                  ))}
+              </tbody>
+            </table>
+            <div className="text-muted text-[10px] mt-1">
+              Total in window:{" "}
+              <span className="tabular-nums">
+                ${dividends.reduce((acc, d) => acc + d.amount, 0).toFixed(4)}
+              </span>
+              /share
+            </div>
+          </div>
+        )}
+      </div>
+    </details>
   );
 }
 

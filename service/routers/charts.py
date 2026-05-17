@@ -71,9 +71,17 @@ def _collect_decision_history(ticker: str, lookback_days: int) -> dict:
     Returns:
         {
           "ticker", "lookback_days", "fetched_at",
-          "decisions": [{trade_date, run_id, decision, provider}, ...],
-          "price_series": [{date, close}, ...]   (yfinance — may be empty on failure)
+          "decisions":    [{trade_date, run_id, decision, provider}, ...],
+          "price_series": [{date, close}, ...]    split-adjusted absolute dollars
+          "splits":       [{date, ratio}, ...]    stock split events in the window
+          "dividends":    [{date, amount}, ...]   cash dividend events in the window
         }
+
+    Prices are **split-adjusted** so the line is continuous through stock
+    splits (no fake 50% drop the day NVDA did its 10-for-1) but **NOT
+    dividend-adjusted** — historical prices reflect what the stock
+    actually traded at, with dividend payouts surfaced as separate events
+    on the chart. See ``charts_mod.build_absolute_price_history``.
     """
     ticker = safe_ticker_component(ticker)
     cutoff = (datetime.now(timezone.utc) - timedelta(days=lookback_days)).date()
@@ -100,35 +108,20 @@ def _collect_decision_history(ticker: str, lookback_days: int) -> dict:
         })
     decisions.sort(key=lambda x: x["trade_date"])
 
-    # Price line via gui.charts helpers (already wired up to yfinance).
-    # Reuse the comparison frame so we don't double-fetch in production.
+    # Absolute split-adjusted prices + split/dividend event lists.
     try:
-        df = charts_mod.build_comparison_frame(
-            ticker, datetime.now(timezone.utc).date().isoformat(),
-            days_back=lookback_days, days_forward=0, benchmarks=(),
-        )
+        price_data = charts_mod.build_absolute_price_history(ticker, lookback_days)
     except Exception:
-        df = None
-
-    price_series: list[dict] = []
-    if df is not None and not df.empty:
-        # The frame typically has columns [ticker, SPY, QQQ...]; we only want the ticker.
-        col = ticker if ticker in df.columns else (df.columns[0] if len(df.columns) else None)
-        if col is not None:
-            for ts, val in df[col].items():
-                if val != val:  # NaN
-                    continue
-                price_series.append({
-                    "date": ts.strftime("%Y-%m-%d") if hasattr(ts, "strftime") else str(ts),
-                    "close": float(val),
-                })
+        price_data = {"price_series": [], "splits": [], "dividends": []}
 
     return {
         "ticker": ticker,
         "lookback_days": lookback_days,
         "fetched_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "decisions": decisions,
-        "price_series": price_series,
+        "price_series": price_data.get("price_series", []),
+        "splits": price_data.get("splits", []),
+        "dividends": price_data.get("dividends", []),
     }
 
 
@@ -176,6 +169,8 @@ def decisions_png(ticker: str, lookback_days: int = 180, width: int = 1100,
     payload = _collect_decision_history(ticker, lookback_days)
     decisions = payload["decisions"]
     price_series = payload["price_series"]
+    splits = payload.get("splits") or []
+    dividends = payload.get("dividends") or []
 
     if not decisions and not price_series:
         raise HTTPException(
@@ -194,7 +189,41 @@ def decisions_png(ticker: str, lookback_days: int = 180, width: int = 1100,
     closes = [p["close"] for p in price_series]
     if dates:
         ax.plot(dates, closes, color="#1f2937", linewidth=1.3,
-                label=f"{ticker} close")
+                label=f"{ticker} close (split-adjusted)")
+
+    # Vertical band for each stock split (rare, big visual impact).
+    split_label_used = False
+    for s in splits:
+        try:
+            day = datetime.fromisoformat(s["date"]).date()
+        except ValueError:
+            continue
+        lbl = "stock split" if not split_label_used else None
+        split_label_used = True
+        ax.axvline(day, color="#7c3aed", linestyle="-", linewidth=1.4,
+                   alpha=0.55, label=lbl)
+        # Annotate the ratio at the top of the chart.
+        ax.annotate(
+            f"{s['ratio']:g}×",
+            xy=(day, 1.0), xycoords=("data", "axes fraction"),
+            xytext=(0, -12), textcoords="offset points",
+            ha="center", fontsize=8, color="#7c3aed", fontweight="bold",
+        )
+
+    # Small green triangles at the bottom for each dividend payout.
+    dividend_label_used = False
+    if dividends and closes:
+        ymin = min(closes)
+        for div in dividends:
+            try:
+                day = datetime.fromisoformat(div["date"]).date()
+            except ValueError:
+                continue
+            lbl = "dividend" if not dividend_label_used else None
+            dividend_label_used = True
+            ax.scatter([day], [ymin], s=60, c="#059669", marker="^",
+                       edgecolors="black", linewidths=0.5, zorder=8,
+                       label=lbl)
 
     seen = set()
     for d in decisions:
@@ -226,7 +255,7 @@ def decisions_png(ticker: str, lookback_days: int = 180, width: int = 1100,
                label="today")
 
     ax.set_title(f"{ticker} — price & decision history ({lookback_days}d)")
-    ax.set_ylabel("Price ($)")
+    ax.set_ylabel("Price ($, split-adjusted)")
     ax.xaxis.set_major_locator(mdates.AutoDateLocator())
     ax.xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m-%d"))
     fig.autofmt_xdate()
