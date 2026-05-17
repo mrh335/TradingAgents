@@ -126,6 +126,12 @@ export default function QueuePage() {
                         {String(it.options.provider)}/{String(it.options.deep_model ?? "—")}
                       </div>
                     )}
+                    {it.options?.batch_label && (
+                      <div className="text-muted mt-0.5">
+                        <span className="text-accent">⊞</span>{" "}
+                        <code>{String(it.options.batch_label)}</code>
+                      </div>
+                    )}
                   </td>
                   <td>
                     <span className={`text-xs font-semibold ${STATUS_COLORS[it.status]}`}>

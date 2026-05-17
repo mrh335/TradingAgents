@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Batches, SettingsApi } from "@/lib/api";
+import { Batches, RunQueue, SettingsApi } from "@/lib/api";
 import { fmtDate, statusColor } from "@/lib/format";
 import type { BatchCreateRequest } from "@/lib/types";
 
@@ -26,6 +26,61 @@ const PROVIDERS = [
   { id: "openrouter", label: "OpenRouter" },
   { id: "ollama", label: "Ollama (local)" },
 ];
+
+// Mirror of MODEL_CATALOG on the Run page so the picker UX matches.
+// Keep the two in sync when adding new models.
+const MODEL_CATALOG: Record<string, { value: string; label: string }[]> = {
+  anthropic: [
+    { value: "claude-opus-4-7", label: "claude-opus-4-7 — top tier" },
+    { value: "claude-sonnet-4-6", label: "claude-sonnet-4-6 — balanced (default deep)" },
+    { value: "claude-sonnet-4-5", label: "claude-sonnet-4-5" },
+    { value: "claude-haiku-4-5", label: "claude-haiku-4-5 — fast + cheap (default quick)" },
+  ],
+  openai: [
+    { value: "gpt-5", label: "gpt-5 — top tier" },
+    { value: "gpt-4o", label: "gpt-4o" },
+    { value: "gpt-4-turbo", label: "gpt-4-turbo" },
+    { value: "gpt-4", label: "gpt-4" },
+    { value: "gpt-4o-mini", label: "gpt-4o-mini — cheap" },
+    { value: "o1", label: "o1 — reasoning" },
+    { value: "o1-mini", label: "o1-mini" },
+  ],
+  google: [
+    { value: "gemini-2.5-pro", label: "gemini-2.5-pro" },
+    { value: "gemini-2-pro", label: "gemini-2-pro" },
+    { value: "gemini-2-flash", label: "gemini-2-flash" },
+    { value: "gemini-1.5-pro", label: "gemini-1.5-pro" },
+    { value: "gemini-1.5-flash", label: "gemini-1.5-flash" },
+  ],
+  xai: [
+    { value: "grok-3", label: "grok-3" },
+    { value: "grok-2", label: "grok-2" },
+    { value: "grok-2-mini", label: "grok-2-mini" },
+  ],
+  deepseek: [
+    { value: "deepseek-r1", label: "deepseek-r1" },
+    { value: "deepseek-v3", label: "deepseek-v3" },
+    { value: "deepseek-chat", label: "deepseek-chat" },
+  ],
+  qwen: [
+    { value: "qwen-max", label: "qwen-max" },
+    { value: "qwen-plus", label: "qwen-plus" },
+    { value: "qwen-turbo", label: "qwen-turbo" },
+  ],
+  glm: [
+    { value: "glm-4-plus", label: "glm-4-plus" },
+    { value: "glm-4", label: "glm-4" },
+    { value: "glm-4-flash", label: "glm-4-flash" },
+  ],
+  openrouter: [
+    { value: "anthropic/claude-sonnet-4-6", label: "anthropic/claude-sonnet-4-6" },
+    { value: "anthropic/claude-haiku-4-5", label: "anthropic/claude-haiku-4-5" },
+    { value: "openai/gpt-4o", label: "openai/gpt-4o" },
+    { value: "google/gemini-2-pro", label: "google/gemini-2-pro" },
+    { value: "meta-llama/llama-3.3-70b-instruct", label: "meta-llama/llama-3.3-70b-instruct" },
+  ],
+};
+const OTHER_SENTINEL = "__other__";
 
 function todayIso(): string {
   return new Date().toISOString().slice(0, 10);
@@ -89,11 +144,48 @@ export default function BatchListPage() {
     },
   });
 
+  // "Queue for Claude Desktop" — fans out one /run-queue POST per ticker.
+  // All items share a batch_label in options.notes so the user can correlate
+  // them on the /queue page (and a future worker can claim them in a single
+  // /claim call with max_items=N if it wants).
+  const queueAll = useMutation({
+    mutationFn: async (req: BatchCreateRequest) => {
+      const batchLabel = (req.name ?? "").trim() ||
+        `batch-${new Date().toISOString().slice(0, 16).replace(/[-T:]/g, "")}`;
+      const results = await Promise.allSettled(
+        req.tickers.map((ticker) =>
+          RunQueue.create({
+            ticker,
+            trade_date: req.trade_date,
+            mode: "analyze",
+            options: {
+              provider: req.llm_provider,
+              deep_model: req.deep_think_llm,
+              quick_model: req.quick_think_llm,
+              debate_rounds: req.max_debate_rounds,
+              risk_rounds: req.max_risk_discuss_rounds,
+              data_vendors: req.data_vendors,
+              batch_label: batchLabel,
+            },
+            requested_by: `web-ui:/batch:${batchLabel}`,
+          }),
+        ),
+      );
+      const ok = results.filter((r) => r.status === "fulfilled").length;
+      const failed = results
+        .map((r, i) => (r.status === "rejected" ? { ticker: req.tickers[i], error: (r.reason as Error).message } : null))
+        .filter((x): x is { ticker: string; error: string } => x !== null);
+      return { batchLabel, total: req.tickers.length, ok, failed };
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["run-queue"] });
+    },
+  });
+
   const parsed = parseTickers(tickersRaw);
 
-  function submit() {
-    if (parsed.length === 0) return;
-    create.mutate({
+  function buildBatchRequest(): BatchCreateRequest {
+    return {
       name: name.trim() || undefined,
       tickers: parsed,
       trade_date: tradeDate,
@@ -108,7 +200,17 @@ export default function BatchListPage() {
         fundamental_data: "yfinance",
         news_data: "yfinance",
       },
-    });
+    };
+  }
+
+  function submit() {
+    if (parsed.length === 0) return;
+    create.mutate(buildBatchRequest());
+  }
+
+  function submitQueue() {
+    if (parsed.length === 0) return;
+    queueAll.mutate(buildBatchRequest());
   }
 
   return (
@@ -168,8 +270,8 @@ export default function BatchListPage() {
           </select>
         </div>
 
-        <ModelField label="Deep-think model" value={deepModel} onChange={setDeepModel} isOllama={isOllama} ollamaList={ollamaList} />
-        <ModelField label="Quick-think model" value={quickModel} onChange={setQuickModel} isOllama={isOllama} ollamaList={ollamaList} />
+        <ModelField label="Deep-think model" value={deepModel} onChange={setDeepModel} provider={provider} ollamaList={ollamaList} />
+        <ModelField label="Quick-think model" value={quickModel} onChange={setQuickModel} provider={provider} ollamaList={ollamaList} />
 
         <div>
           <label className="label">Bull/Bear rounds</label>
@@ -180,18 +282,63 @@ export default function BatchListPage() {
           <input className="input w-full" type="number" min={1} max={5} value={riskRounds} onChange={(e) => setRiskRounds(parseInt(e.target.value) || 1)} />
         </div>
 
-        <div className="col-span-3 flex justify-end items-center gap-3">
+        <div className="col-span-3 flex flex-wrap justify-end items-center gap-3">
           {provider === "ollama" && (
             <span className="text-xs text-warning">
               ⚠ Ollama runs locally — a batch of N tickers ≈ N × a single run. Plan for hours, not minutes.
             </span>
           )}
-          <button type="submit" className="btn btn-primary" disabled={parsed.length === 0 || create.isPending}>
-            {create.isPending ? "Queuing…" : `▶ Run batch (${parsed.length})`}
+          <button
+            type="button"
+            className="btn"
+            onClick={submitQueue}
+            disabled={parsed.length === 0 || queueAll.isPending || create.isPending}
+            title={
+              "Don't run now — drop one queue item per ticker on the run queue. " +
+              "A worker (typically the tradingagents-analyze skill in Claude Desktop " +
+              "or Claude Code) drains them later using its own LLM budget."
+            }
+          >
+            {queueAll.isPending
+              ? `Queueing ${parsed.length}…`
+              : `🤖 Queue ${parsed.length} for Claude Desktop`}
+          </button>
+          <button
+            type="submit"
+            className="btn btn-primary"
+            disabled={parsed.length === 0 || create.isPending || queueAll.isPending}
+          >
+            {create.isPending ? "Starting…" : `▶ Run batch now (${parsed.length})`}
           </button>
         </div>
         {create.isError && (
           <div className="col-span-3 text-sm text-danger">{(create.error as Error).message}</div>
+        )}
+        {queueAll.isError && (
+          <div className="col-span-3 text-sm text-danger">
+            Queue failed: {(queueAll.error as Error).message}
+          </div>
+        )}
+        {queueAll.isSuccess && queueAll.data && (
+          <div className="col-span-3 text-sm">
+            <span className="text-success">
+              ✓ Queued {queueAll.data.ok}/{queueAll.data.total} tickers as{" "}
+              <code>{queueAll.data.batchLabel}</code>
+            </span>
+            {queueAll.data.failed.length > 0 && (
+              <div className="text-danger mt-1">
+                {queueAll.data.failed.length} failed:{" "}
+                {queueAll.data.failed
+                  .map((f) => `${f.ticker} (${f.error.slice(0, 60)})`)
+                  .join(", ")}
+              </div>
+            )}
+            <div className="mt-1">
+              <Link href="/queue" className="text-accent hover:underline">
+                View queue →
+              </Link>
+            </div>
+          </div>
         )}
       </form>
 
@@ -239,14 +386,15 @@ export default function BatchListPage() {
 }
 
 function ModelField({
-  label, value, onChange, isOllama, ollamaList,
+  label, value, onChange, provider, ollamaList,
 }: {
   label: string;
   value: string;
   onChange: (v: string) => void;
-  isOllama: boolean;
+  provider: string;
   ollamaList: Array<{ name: string; parameter_size?: string }>;
 }) {
+  const isOllama = provider === "ollama";
   if (isOllama) {
     return (
       <div>
@@ -265,10 +413,38 @@ function ModelField({
       </div>
     );
   }
+  const catalog = MODEL_CATALOG[provider] ?? [];
+  const valueIsInCatalog = !!catalog.find((m) => m.value === value);
+  const showCustom = !valueIsInCatalog;
   return (
     <div>
       <label className="label">{label}</label>
-      <input className="input w-full" value={value} onChange={(e) => onChange(e.target.value)} required />
+      <select
+        className="input w-full"
+        value={showCustom ? OTHER_SENTINEL : value}
+        onChange={(e) => {
+          const v = e.target.value;
+          if (v === OTHER_SENTINEL) {
+            onChange(value || "");
+          } else {
+            onChange(v);
+          }
+        }}
+      >
+        {catalog.map((m) => (
+          <option key={m.value} value={m.value}>{m.label}</option>
+        ))}
+        <option value={OTHER_SENTINEL}>Other (custom)…</option>
+      </select>
+      {showCustom && (
+        <input
+          className="input w-full mt-1 text-sm"
+          placeholder="Type any model name your provider supports"
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          required
+        />
+      )}
     </div>
   );
 }
