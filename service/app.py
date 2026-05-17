@@ -33,12 +33,14 @@ from service.routers import (
     notes,
     planner,
     portfolio,
+    restrictions as restrictions_router,
     run_queue as run_queue_router,
     runs,
     settings,
     sidecars as sidecars_router,
     simulation,
     streaming,
+    tokens as tokens_router,
     watchlist,
 )
 
@@ -125,6 +127,8 @@ app.include_router(simulation.router)
 app.include_router(planner.router)
 app.include_router(sidecars_router.router)
 app.include_router(run_queue_router.router)
+app.include_router(restrictions_router.router)
+app.include_router(tokens_router.router)
 
 
 def main() -> int:

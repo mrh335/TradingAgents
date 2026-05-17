@@ -124,6 +124,23 @@ def init_db() -> None:
                 error_message TEXT
             );
 
+            -- Trading restrictions: per-ticker blackout windows the user is
+            -- obligated to honor (employee restricted lists, 10b5-1 closure
+            -- windows around earnings, regulatory restrictions, etc). The
+            -- trader + PM agents read these and refuse to recommend trades
+            -- inside the window. Hard constraint, not a soft suggestion.
+            CREATE TABLE IF NOT EXISTS trading_restrictions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ticker TEXT NOT NULL,
+                start_date TEXT NOT NULL,       -- YYYY-MM-DD inclusive
+                end_date TEXT,                  -- YYYY-MM-DD inclusive; NULL = open-ended
+                kind TEXT NOT NULL DEFAULT 'blackout',  -- blackout | restricted_list | other
+                reason TEXT,                    -- free-form explanation surfaced to the agent
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS trading_restrictions_ticker ON trading_restrictions(ticker, start_date);
+
             -- Run queue: work items deposited by the webapp, consumed by an
             -- external poller (e.g. Claude Desktop / Claude Code running the
             -- tradingagents-analyze skill). Decouples "user wants analysis"
@@ -554,6 +571,129 @@ def runs_in_batch(batch_id: str) -> List[Dict[str, Any]]:
 # Run queue — external-worker handoff (used by tradingagents-analyze skill
 # running in Claude Desktop / Claude Code, or any other poller).
 # ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Trading restrictions — per-ticker blackout windows.
+# ---------------------------------------------------------------------------
+
+def list_restrictions(*, ticker: Optional[str] = None,
+                       active_on: Optional[str] = None,
+                       ) -> List[Dict[str, Any]]:
+    """List restrictions, optionally filtered.
+
+    ``ticker``: case-insensitive match.
+    ``active_on``: YYYY-MM-DD — only return restrictions whose [start_date,
+    end_date] window contains this date (open-ended end_date counts as
+    "indefinitely active").
+    """
+    sql = "SELECT * FROM trading_restrictions WHERE 1=1"
+    args: List[Any] = []
+    if ticker:
+        sql += " AND ticker = ?"
+        args.append(ticker.strip().upper())
+    if active_on:
+        sql += " AND start_date <= ? AND (end_date IS NULL OR end_date >= ?)"
+        args.extend([active_on, active_on])
+    sql += " ORDER BY ticker, start_date DESC"
+    with _conn() as c:
+        rows = c.execute(sql, args).fetchall()
+        return [dict(r) for r in rows]
+
+
+def add_restriction(*, ticker: str, start_date: str,
+                     end_date: Optional[str] = None,
+                     kind: str = "blackout",
+                     reason: Optional[str] = None) -> Dict[str, Any]:
+    now = _now()
+    with _conn() as c:
+        cur = c.execute(
+            """INSERT INTO trading_restrictions(ticker, start_date, end_date,
+                                                kind, reason, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (ticker.strip().upper(), start_date, end_date, kind, reason, now, now),
+        )
+        row = c.execute(
+            "SELECT * FROM trading_restrictions WHERE id=?", (cur.lastrowid,)
+        ).fetchone()
+        return dict(row)
+
+
+def update_restriction(restriction_id: int, *,
+                        start_date: Optional[str] = None,
+                        end_date: Optional[str] = None,
+                        kind: Optional[str] = None,
+                        reason: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    fields = []
+    args: List[Any] = []
+    if start_date is not None:
+        fields.append("start_date=?"); args.append(start_date)
+    if end_date is not None:
+        fields.append("end_date=?"); args.append(end_date)
+    if kind is not None:
+        fields.append("kind=?"); args.append(kind)
+    if reason is not None:
+        fields.append("reason=?"); args.append(reason)
+    if not fields:
+        return get_restriction(restriction_id)
+    fields.append("updated_at=?"); args.append(_now())
+    args.append(restriction_id)
+    with _conn() as c:
+        c.execute(
+            f"UPDATE trading_restrictions SET {', '.join(fields)} WHERE id=?",
+            args,
+        )
+    return get_restriction(restriction_id)
+
+
+def get_restriction(restriction_id: int) -> Optional[Dict[str, Any]]:
+    with _conn() as c:
+        row = c.execute(
+            "SELECT * FROM trading_restrictions WHERE id=?", (restriction_id,)
+        ).fetchone()
+        return dict(row) if row else None
+
+
+def delete_restriction(restriction_id: int) -> bool:
+    with _conn() as c:
+        cur = c.execute(
+            "DELETE FROM trading_restrictions WHERE id=?", (restriction_id,)
+        )
+        return cur.rowcount > 0
+
+
+# ---------------------------------------------------------------------------
+# Token-usage events — aggregated cost/usage tracking across every run.
+# ---------------------------------------------------------------------------
+
+def list_token_events(*, since_iso: Optional[str] = None,
+                       ticker: Optional[str] = None,
+                       limit: int = 5000,
+                       ) -> List[Dict[str, Any]]:
+    """Pull tokens_in / tokens_out per run for cost + usage charts.
+
+    Sources data from the existing ``runs`` table (status='done', tokens
+    populated by the runner or by the /runs/import path from Claude Desktop
+    skill submissions). The /tokens page slices this by day / provider /
+    ticker without needing a separate event table.
+    """
+    sql = (
+        "SELECT run_id, ticker, trade_date, provider, deep_model, quick_model, "
+        "       started_at, completed_at, tokens_in, tokens_out, llm_calls, tool_calls "
+        "FROM runs WHERE status='done' "
+    )
+    args: List[Any] = []
+    if since_iso:
+        sql += "AND completed_at >= ? "
+        args.append(since_iso)
+    if ticker:
+        sql += "AND ticker = ? "
+        args.append(ticker.strip().upper())
+    sql += "ORDER BY completed_at DESC LIMIT ?"
+    args.append(limit)
+    with _conn() as c:
+        rows = c.execute(sql, args).fetchall()
+        return [dict(r) for r in rows]
+
 
 def new_queue_id() -> str:
     return uuid.uuid4().hex

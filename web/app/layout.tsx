@@ -13,6 +13,7 @@ const NAV = [
   { href: "/", label: "Home" },
   { href: "/watchlist", label: "Watchlist" },
   { href: "/portfolio", label: "Portfolio" },
+  { href: "/restrictions", label: "Restrictions" },
   { href: "/run", label: "Run" },
   { href: "/batch", label: "Batch" },
   { href: "/queue", label: "Queue" },
@@ -23,6 +24,7 @@ const NAV = [
   { href: "/simulation", label: "Simulation" },
   { href: "/notes", label: "Notes" },
   { href: "/memory", label: "Memory" },
+  { href: "/tokens", label: "Tokens" },
   { href: "/settings", label: "Settings" },
   { href: "/docs", label: "Help / Docs" },
 ];

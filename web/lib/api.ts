@@ -397,6 +397,107 @@ export type QueueItem = {
   created_at: string;
 };
 
+// ---- Trading restrictions (per-ticker blackout windows) ----------------
+
+export type Restriction = {
+  id: number;
+  ticker: string;
+  start_date: string;
+  end_date: string | null;
+  kind: "blackout" | "restricted_list" | "regulatory" | "other";
+  reason: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export const Restrictions = {
+  list: (params?: { ticker?: string; active_on?: string }) => {
+    const qp = new URLSearchParams();
+    if (params?.ticker) qp.set("ticker", params.ticker);
+    if (params?.active_on) qp.set("active_on", params.active_on);
+    const qs = qp.toString();
+    return request<Restriction[]>(`/restrictions${qs ? `?${qs}` : ""}`);
+  },
+  create: (req: {
+    ticker: string;
+    start_date: string;
+    end_date?: string | null;
+    kind?: Restriction["kind"];
+    reason?: string | null;
+  }) =>
+    request<Restriction>("/restrictions", {
+      method: "POST",
+      body: JSON.stringify(req),
+    }),
+  update: (
+    id: number,
+    req: Partial<{
+      start_date: string;
+      end_date: string | null;
+      kind: Restriction["kind"];
+      reason: string | null;
+    }>,
+  ) =>
+    request<Restriction>(`/restrictions/${id}`, {
+      method: "PUT",
+      body: JSON.stringify(req),
+    }),
+  delete: (id: number) =>
+    request<{ deleted: number }>(`/restrictions/${id}`, { method: "DELETE" }),
+};
+
+// ---- Token usage --------------------------------------------------------
+
+export type TokenEvent = {
+  run_id: string;
+  ticker: string;
+  trade_date: string;
+  provider: string | null;
+  deep_model: string | null;
+  completed_at: string | null;
+  tokens_in: number;
+  tokens_out: number;
+  llm_calls: number;
+  tool_calls: number;
+  estimated_cost_usd: number;
+};
+
+export type TokenBucket = {
+  date: string;
+  provider: string | null;
+  tokens_in: number;
+  tokens_out: number;
+  runs: number;
+  estimated_cost_usd: number;
+};
+
+export type TokenSummary = {
+  buckets: TokenBucket[];
+  totals: {
+    tokens_in: number;
+    tokens_out: number;
+    runs: number;
+    estimated_cost_usd: number;
+    days: number;
+  };
+  providers: string[];
+};
+
+export const Tokens = {
+  events: (params?: { since_iso?: string; ticker?: string; limit?: number }) => {
+    const qp = new URLSearchParams();
+    if (params?.since_iso) qp.set("since_iso", params.since_iso);
+    if (params?.ticker) qp.set("ticker", params.ticker);
+    if (params?.limit) qp.set("limit", String(params.limit));
+    const qs = qp.toString();
+    return request<TokenEvent[]>(`/tokens/events${qs ? `?${qs}` : ""}`);
+  },
+  summary: (days: number = 30, groupByProvider: boolean = true) =>
+    request<TokenSummary>(
+      `/tokens/summary?days=${days}&group_by_provider=${groupByProvider}`,
+    ),
+};
+
 export const RunQueue = {
   list: (status?: QueueItem["status"]) => {
     const qs = status ? `?status=${status}` : "";
