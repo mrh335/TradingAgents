@@ -181,17 +181,37 @@ schtasks /Create /SC HOURLY /TN "TradingAgents queue drain" \\
 0 6,12,18 * * 1-5 claude --skill tradingagents-analyze --prompt "process the run queue"
 \`\`\`
 
-### 5. From Claude Desktop
+### 5. From Claude Desktop — \`scheduled-tasks\` MCP
 
-Claude Desktop **doesn't have native cron**, but you can:
-- Trigger manually: just say "process the run queue" in any Claude
-  Desktop session that has the skill loaded.
-- Install the \`scheduled-tasks\` MCP server (separate setup, MCP-only) —
-  it adds scheduling capability inside Claude Desktop.
+Claude Desktop ships with the **\`scheduled-tasks\` MCP server**
+pre-installed at the user level. Tasks land as files under
+\`C:\\Users\\<you>\\.claude\\scheduled-tasks\\<taskId>\\SKILL.md\` and
+show up in the Claude Desktop sidebar with their next-run timestamp.
 
-For **unattended** drainage from a machine that should run on a schedule,
-use Claude Code on that same machine (option 3 or 4 above). Both
-applications share the user-level skill directory at \`~/.claude/skills/\`.
+To create one from inside Claude Desktop, just say:
+
+> "Schedule a task that runs every weekday at 6:30am called
+> *tradingagents-queue-drain* with the prompt 'process the run queue'."
+
+Claude calls \`mcp__scheduled-tasks__create_scheduled_task\` under the
+hood. Three scheduling modes:
+
+| Mode | Field | Example |
+|---|---|---|
+| Recurring | \`cronExpression\` (LOCAL time, 5-field cron) | \`"0 6 * * 1-5"\` = 6am weekdays |
+| One-shot | \`fireAt\` (ISO 8601 with offset) | \`"2026-05-17T18:00:00-04:00"\` |
+| Ad-hoc | omit both | manual run only |
+
+Same files / same registry are accessible from Claude **Code** on the
+same machine — both apps share the user-level state at \`~/.claude/\`.
+
+**The catch — and it's a real one**: scheduled tasks only fire **while
+the app is open**. If Claude Desktop was closed when the task was due,
+it runs on next launch instead of at the scheduled wall-clock time.
+For routine drains (e.g. "every 2 hours while I'm working") this is
+fine. For true 24/7 unattended polling (e.g. 6am every morning whether
+or not you're logged in), only the server-side auto-poller works —
+see option 7 below.
 
 ### 6. From Anthropic Cowork
 
