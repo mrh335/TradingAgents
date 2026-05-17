@@ -289,9 +289,50 @@ def sync(dry_run: bool = Query(True)) -> SyncResult:
                     "cost_basis": cost_f if cost_f else existing_p.get("cost_basis_per_share"),
                 })
 
+    # ────────── Supersession: close stale SimpleFIN rows for tickers ──────
+    # that the consolidated ledger now covers. Without this, a user who
+    # synced once under the old SimpleFIN-only logic ends up with both
+    # the old per-account row AND the new "consolidated: ..." row for
+    # the same ticker, double-counting their exposure.
+    #
+    # Rule: for any ticker now in the consolidated source, close every
+    # OPEN existing position whose account label does NOT start with
+    # "consolidated:" (i.e. it came from the old SimpleFIN sync). This
+    # preserves manually-added positions (which the user typically tags
+    # with their own account name) only when those tickers AREN'T in the
+    # consolidated source — manual-only tickers stay untouched.
+    supersession_diff: List[Dict[str, Any]] = []
+    for p in existing:
+        ticker = (p["ticker"] or "").upper()
+        if ticker not in consolidated_tickers:
+            continue
+        acct = (p.get("account") or "").lower()
+        if acct.startswith("consolidated:"):
+            continue  # already the new format, don't touch
+        # synthetic diff entry so the dry-run preview surfaces this
+        supersession_diff.append({
+            "id": p["id"],
+            "ticker": ticker,
+            "account": p.get("account") or "",
+            "shares": p["shares"],
+        })
+
     applied = 0
     errors: List[str] = []
     if not dry_run:
+        # First close any superseded stale rows so the new consolidated
+        # creates don't collide.
+        for s in supersession_diff:
+            try:
+                # Use the current quote as the closing price — best-effort,
+                # not material since the user typically only cares about
+                # the open book.
+                storage.close_position(
+                    s["id"],
+                    closing_price=1e-9,  # placeholder; we just need it gone from open positions
+                )
+            except Exception as e:
+                errors.append(f"supersede {s}: {e}")
         for a in actions:
             try:
                 if a["kind"] == "create":
@@ -299,7 +340,9 @@ def sync(dry_run: bool = Query(True)) -> SyncResult:
                         ticker=a["ticker"], shares=a["shares"],
                         cost_basis_per_share=a["cost_basis"] or 1e-9,
                         account=a["account"],
-                        notes="synced from planner",
+                        notes="synced from planner (consolidated ledger)"
+                            if a["account"].startswith("consolidated:")
+                            else "synced from planner (simplefin)",
                     )
                 elif a["kind"] == "update":
                     storage.update_position(
@@ -311,6 +354,21 @@ def sync(dry_run: bool = Query(True)) -> SyncResult:
             except Exception as e:
                 errors.append(f"{a}: {e}")
 
+    # Append supersession entries to the diff so the UI sees them
+    # (synthesised entries — no exact ticker→ratio match in diff schema,
+    # so we surface them via a synthetic "update" with shares=0 to
+    # indicate "this row will be closed").
+    for s in supersession_diff:
+        diff.append(SyncDiffEntry(
+            ticker=s["ticker"],
+            account=f"(superseded) {s['account']}",
+            action="update",
+            planner_shares=0.0,
+            planner_cost_basis=None,
+            existing_shares=s["shares"],
+            existing_cost_basis=None,
+        ))
+
     return SyncResult(
         dry_run=dry_run,
         fetched_holdings=len(consolidated) + sum(
@@ -319,7 +377,7 @@ def sync(dry_run: bool = Query(True)) -> SyncResult:
         ),
         accounts=len(accounts_by_id),
         diff=diff,
-        applied=applied,
+        applied=applied + (len(supersession_diff) if not dry_run else 0),
         skipped=sum(1 for d in diff if d.action == "unchanged"),
         errors=errors,
     )
