@@ -37,16 +37,22 @@ export default function SchedulesPage() {
   });
 
   // ─── New schedule form state ──────────────────────────────────────
+  // The model/rounds fields are advanced overrides — most users just want
+  // ticker + cadence + (optionally) a note. Empty options means the worker
+  // (tradingagents-analyze skill) uses its own defaults: anthropic/
+  // sonnet-4-6/haiku-4-5 with 1 round each.
   const [form, setForm] = useState({
     ticker: "",
     preset: CADENCE_PRESETS[0].label,
     customCron: "",
+    notes: "",
+    // Advanced overrides
+    overrideModel: false,
     provider: "anthropic",
     deep_model: "claude-sonnet-4-6",
     quick_model: "claude-haiku-4-5",
     debate_rounds: 1,
     risk_rounds: 1,
-    notes: "",
   });
 
   const presetCron =
@@ -54,27 +60,33 @@ export default function SchedulesPage() {
   const effectiveCron = form.preset === "Custom" ? form.customCron : presetCron;
 
   const create = useMutation({
-    mutationFn: () =>
-      Schedules.create({
+    mutationFn: () => {
+      // Only attach per-schedule model overrides if the user explicitly
+      // toggled Advanced. Otherwise leave options empty — the worker
+      // uses its own defaults.
+      const options: Record<string, any> = {};
+      if (form.overrideModel) {
+        options.provider = form.provider;
+        options.deep_model = form.deep_model;
+        options.quick_model = form.quick_model;
+        options.debate_rounds = form.debate_rounds;
+        options.risk_rounds = form.risk_rounds;
+        options.data_vendors = {
+          core_stock_apis: "yfinance",
+          technical_indicators: "yfinance",
+          fundamental_data: "yfinance",
+          news_data: "yfinance",
+        };
+      }
+      return Schedules.create({
         ticker: form.ticker.toUpperCase(),
         cron_expression: effectiveCron,
         mode: "analyze",
-        options: {
-          provider: form.provider,
-          deep_model: form.deep_model,
-          quick_model: form.quick_model,
-          debate_rounds: form.debate_rounds,
-          risk_rounds: form.risk_rounds,
-          data_vendors: {
-            core_stock_apis: "yfinance",
-            technical_indicators: "yfinance",
-            fundamental_data: "yfinance",
-            news_data: "yfinance",
-          },
-        },
+        options,
         enabled: true,
         notes: form.notes || undefined,
-      }),
+      });
+    },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["schedules"] });
       setForm({ ...form, ticker: "", notes: "", customCron: "" });
@@ -115,120 +127,151 @@ export default function SchedulesPage() {
         </p>
       </header>
 
-      {/* ─── New schedule ─── */}
+      {/* ─── New schedule (simple form) ─── */}
       <form
-        className="card grid grid-cols-1 md:grid-cols-3 gap-3 items-end"
+        className="card space-y-4"
         onSubmit={(e) => {
           e.preventDefault();
           create.mutate();
         }}
       >
-        <div>
-          <label className="label">Ticker</label>
-          <input
-            className="input w-full"
-            value={form.ticker}
-            onChange={(e) => setForm({ ...form, ticker: e.target.value.toUpperCase() })}
-            placeholder="NVDA"
-            required
-          />
-        </div>
-        <div>
-          <label className="label">Cadence</label>
-          <select
-            className="input w-full"
-            value={form.preset}
-            onChange={(e) => setForm({ ...form, preset: e.target.value })}
-          >
-            {CADENCE_PRESETS.map((p) => (
-              <option key={p.label} value={p.label}>
-                {p.label}{p.cron && p.label !== "Custom" ? ` — ${p.description}` : ""}
-              </option>
-            ))}
-          </select>
-        </div>
-        <div>
-          <label className="label">Effective cron</label>
-          {form.preset === "Custom" ? (
+        {/* Three essential fields — ticker, cadence, optional notes */}
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3 items-end">
+          <div>
+            <label className="label">Ticker</label>
             <input
-              className="input w-full font-mono text-xs"
-              value={form.customCron}
-              onChange={(e) => setForm({ ...form, customCron: e.target.value })}
-              placeholder="0 6 * * 1-5"
+              className="input w-full"
+              value={form.ticker}
+              onChange={(e) => setForm({ ...form, ticker: e.target.value.toUpperCase() })}
+              placeholder="NVDA"
               required
             />
-          ) : (
-            <code className="block input bg-bg text-xs">{presetCron}</code>
+          </div>
+          <div>
+            <label className="label">Cadence</label>
+            <select
+              className="input w-full"
+              value={form.preset}
+              onChange={(e) => setForm({ ...form, preset: e.target.value })}
+            >
+              {CADENCE_PRESETS.map((p) => (
+                <option key={p.label} value={p.label}>
+                  {p.label}{p.cron && p.label !== "Custom" ? ` — ${p.description}` : ""}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label className="label">
+              {form.preset === "Custom" ? "Custom cron expression" : "Effective cron"}
+            </label>
+            {form.preset === "Custom" ? (
+              <input
+                className="input w-full font-mono text-xs"
+                value={form.customCron}
+                onChange={(e) => setForm({ ...form, customCron: e.target.value })}
+                placeholder="0 6 * * 1-5"
+                required
+              />
+            ) : (
+              <code className="block input bg-bg text-xs">{presetCron}</code>
+            )}
+          </div>
+          <div className="md:col-span-3">
+            <label className="label">Notes <span className="text-muted">(optional)</span></label>
+            <input
+              className="input w-full"
+              value={form.notes}
+              onChange={(e) => setForm({ ...form, notes: e.target.value })}
+              placeholder="e.g. weekday morning refresh"
+              maxLength={200}
+            />
+          </div>
+        </div>
+
+        {/* Advanced overrides — collapsed by default. Most users never open this. */}
+        <details className="border border-border rounded-md">
+          <summary className="cursor-pointer px-3 py-2 text-sm text-muted hover:text-fg">
+            Advanced — override model / depth (leave closed to use defaults)
+          </summary>
+          <div className="px-3 pb-3 pt-1 space-y-3">
+            <label className="flex items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                checked={form.overrideModel}
+                onChange={(e) => setForm({ ...form, overrideModel: e.target.checked })}
+              />
+              Apply these overrides to runs from this schedule
+            </label>
+            <div
+              className={`grid grid-cols-2 md:grid-cols-3 gap-3 ${
+                form.overrideModel ? "" : "opacity-50 pointer-events-none"
+              }`}
+            >
+              <div>
+                <label className="label">Provider</label>
+                <select
+                  className="input w-full"
+                  value={form.provider}
+                  onChange={(e) => setForm({ ...form, provider: e.target.value })}
+                >
+                  <option value="anthropic">Anthropic (Claude)</option>
+                  <option value="openai">OpenAI (GPT)</option>
+                  <option value="google">Google (Gemini)</option>
+                  <option value="ollama">Ollama (local)</option>
+                </select>
+              </div>
+              <div>
+                <label className="label">Deep-think model</label>
+                <input
+                  className="input w-full font-mono text-xs"
+                  value={form.deep_model}
+                  onChange={(e) => setForm({ ...form, deep_model: e.target.value })}
+                />
+              </div>
+              <div>
+                <label className="label">Quick-think model</label>
+                <input
+                  className="input w-full font-mono text-xs"
+                  value={form.quick_model}
+                  onChange={(e) => setForm({ ...form, quick_model: e.target.value })}
+                />
+              </div>
+              <div>
+                <label className="label">Bull/Bear rounds</label>
+                <input
+                  type="number"
+                  min={1}
+                  max={5}
+                  className="input w-full"
+                  value={form.debate_rounds}
+                  onChange={(e) => setForm({ ...form, debate_rounds: Number(e.target.value) })}
+                />
+              </div>
+              <div>
+                <label className="label">Risk rounds</label>
+                <input
+                  type="number"
+                  min={1}
+                  max={5}
+                  className="input w-full"
+                  value={form.risk_rounds}
+                  onChange={(e) => setForm({ ...form, risk_rounds: Number(e.target.value) })}
+                />
+              </div>
+            </div>
+            <p className="text-xs text-muted">
+              Leave this section closed (or the checkbox off) to use the worker
+              skill&apos;s defaults — currently <code>anthropic / claude-sonnet-4-6 / claude-haiku-4-5</code>{" "}
+              with 1 round of each debate.
+            </p>
+          </div>
+        </details>
+
+        <div className="flex justify-end items-center gap-3">
+          {!form.ticker && (
+            <span className="text-muted text-xs">Type a ticker to enable</span>
           )}
-        </div>
-
-        {/* Model + depth */}
-        <div>
-          <label className="label">Provider</label>
-          <select
-            className="input w-full"
-            value={form.provider}
-            onChange={(e) => setForm({ ...form, provider: e.target.value })}
-          >
-            <option value="anthropic">Anthropic (Claude)</option>
-            <option value="openai">OpenAI (GPT)</option>
-            <option value="google">Google (Gemini)</option>
-            <option value="ollama">Ollama (local)</option>
-          </select>
-        </div>
-        <div>
-          <label className="label">Deep-think model</label>
-          <input
-            className="input w-full font-mono text-xs"
-            value={form.deep_model}
-            onChange={(e) => setForm({ ...form, deep_model: e.target.value })}
-            required
-          />
-        </div>
-        <div>
-          <label className="label">Quick-think model</label>
-          <input
-            className="input w-full font-mono text-xs"
-            value={form.quick_model}
-            onChange={(e) => setForm({ ...form, quick_model: e.target.value })}
-            required
-          />
-        </div>
-
-        <div>
-          <label className="label">Bull/Bear rounds</label>
-          <input
-            type="number"
-            min={1}
-            max={5}
-            className="input w-full"
-            value={form.debate_rounds}
-            onChange={(e) => setForm({ ...form, debate_rounds: Number(e.target.value) })}
-          />
-        </div>
-        <div>
-          <label className="label">Risk rounds</label>
-          <input
-            type="number"
-            min={1}
-            max={5}
-            className="input w-full"
-            value={form.risk_rounds}
-            onChange={(e) => setForm({ ...form, risk_rounds: Number(e.target.value) })}
-          />
-        </div>
-        <div>
-          <label className="label">Notes <span className="text-muted">(optional)</span></label>
-          <input
-            className="input w-full"
-            value={form.notes}
-            onChange={(e) => setForm({ ...form, notes: e.target.value })}
-            placeholder="e.g. weekday morning refresh"
-            maxLength={200}
-          />
-        </div>
-
-        <div className="md:col-span-3 flex justify-end items-center gap-3">
           {create.isError && (
             <span className="text-danger text-sm">
               {(create.error as Error).message}
