@@ -80,6 +80,18 @@ def main() -> int:
     p.add_argument("--config", default=str(DEFAULT_CONFIG))
     p.add_argument("--dry-run", action="store_true",
                    help="Print the payload that would be POSTed without sending.")
+    # Token usage — passed in by the skill's run wrapper after token_logger.py
+    # has estimated input/output from the prompt + response files. These end
+    # up in archive.metadata so the webapp's /tokens page and per-run pages
+    # show real counts instead of zeros.
+    p.add_argument("--tokens-in", type=int, default=None,
+                   help="Estimated input tokens for the run (from token_logger).")
+    p.add_argument("--tokens-out", type=int, default=None,
+                   help="Estimated output tokens for the run (from token_logger).")
+    p.add_argument("--llm-calls", type=int, default=None,
+                   help="Number of LLM invocations the skill made for this run.")
+    p.add_argument("--tool-calls", type=int, default=None,
+                   help="Number of tool calls made during the run.")
     args = p.parse_args()
 
     archive_path = Path(args.archive)
@@ -105,6 +117,26 @@ def main() -> int:
     if not all(meta.get(k) for k in ("run_id", "ticker", "trade_date")):
         _eprint("ERROR: archive metadata missing run_id / ticker / trade_date")
         return 2
+
+    # Inject token usage into archive.metadata if the caller passed it.
+    # The webapp's /runs/import reads metadata.tokens_in / tokens_out /
+    # llm_calls / tool_calls and stores them on the runs row, which feeds
+    # the /tokens chart and per-run header. Without these, the chart shows
+    # zeros for skill-imported runs.
+    metadata_updates = {}
+    for arg_name, meta_key in (
+        ("tokens_in", "tokens_in"),
+        ("tokens_out", "tokens_out"),
+        ("llm_calls", "llm_calls"),
+        ("tool_calls", "tool_calls"),
+    ):
+        val = getattr(args, arg_name, None)
+        if val is not None:
+            metadata_updates[meta_key] = int(val)
+    if metadata_updates:
+        archive.setdefault("metadata", {}).update(metadata_updates)
+        meta = archive["metadata"]
+        _eprint(f"  metadata token fields populated: {metadata_updates}")
 
     cfg = _load_config(Path(args.config))
     api_base = (cfg.get("api_base_url") or "http://192.168.2.34:8001").rstrip("/")

@@ -22,6 +22,56 @@ from service.schemas import RunCreateRequest, RunDetail, RunImportRequest, RunSu
 router = APIRouter(prefix="/runs", tags=["runs"])
 
 
+# Conservative chars-per-token estimate. tiktoken cl100k_base averages
+# ~4 chars/token on English prose; we use 4 for a back-of-envelope read.
+_CHARS_PER_TOKEN = 4.0
+
+
+def _estimate_tokens_from_archive(archive: dict) -> tuple[int, int]:
+    """Rough server-side fallback for clients that don't send token counts.
+
+    Splits archive content into "input-like" (analyst reports + debates that
+    were re-fed to downstream phases) and "output-like" (final-stage outputs
+    the model produced once). Both are estimated at 4 chars/token (English
+    prose, tiktoken cl100k_base ballpark). Off by 10-30% but better than 0
+    on the /tokens chart.
+    """
+    state = (archive.get("state") or {}) if isinstance(archive, dict) else {}
+    if not isinstance(state, dict):
+        return 0, 0
+
+    # Output-like: prose the model emitted at distinct phases.
+    output_fields = (
+        "market_report", "sentiment_report", "news_report",
+        "fundamentals_report", "trader_investment_plan", "final_trade_decision",
+    )
+    output_chars = sum(
+        len(state.get(f) or "") for f in output_fields if isinstance(state.get(f), str)
+    )
+    debate = state.get("investment_debate_state") or {}
+    risk = state.get("risk_debate_state") or {}
+    for k in ("bull_history", "bear_history", "judge_decision"):
+        v = debate.get(k) if isinstance(debate, dict) else None
+        if isinstance(v, str):
+            output_chars += len(v)
+    for k in ("aggressive_history", "conservative_history", "neutral_history", "judge_decision"):
+        v = risk.get(k) if isinstance(risk, dict) else None
+        if isinstance(v, str):
+            output_chars += len(v)
+
+    # Input-like: every output gets fed into every downstream phase that
+    # references it. A rough heuristic: input is ~2x the output (each
+    # report is read by multiple later agents on average). Skill-side
+    # tiktoken numbers typically show input/output ratios in the 1.5-3x
+    # range, so 2.0 is a reasonable midpoint.
+    input_chars = int(output_chars * 2.0)
+
+    return (
+        int(input_chars / _CHARS_PER_TOKEN),
+        int(output_chars / _CHARS_PER_TOKEN),
+    )
+
+
 # ---------------------------------------------------------------------------
 # CRUD-shaped endpoints
 # ---------------------------------------------------------------------------
@@ -157,12 +207,25 @@ def import_run(req: RunImportRequest) -> RunSummary:
         risk_rounds=int(metadata.get("risk_rounds", 0) or 0),
         vendors=vendors,
     )
+    # Token counts — prefer the values the client sent, fall back to a
+    # rough server-side estimate based on the archived prose. Caller-
+    # supplied numbers (e.g. tiktoken from the Claude Desktop skill) are
+    # always more accurate; the estimate exists so legacy / minimal clients
+    # that don't post token data still get a non-zero number on the
+    # /tokens chart and per-run pages.
+    tokens_in = int(metadata.get("tokens_in", 0) or 0)
+    tokens_out = int(metadata.get("tokens_out", 0) or 0)
+    llm_calls = int(metadata.get("llm_calls", 0) or 0)
+    tool_calls = int(metadata.get("tool_calls", 0) or 0)
+    if tokens_in == 0 and tokens_out == 0:
+        est_in, est_out = _estimate_tokens_from_archive(archive)
+        tokens_in, tokens_out = est_in, est_out
     storage.update_run_stats(
         run_id,
-        llm_calls=int(metadata.get("llm_calls", 0) or 0),
-        tool_calls=int(metadata.get("tool_calls", 0) or 0),
-        tokens_in=int(metadata.get("tokens_in", 0) or 0),
-        tokens_out=int(metadata.get("tokens_out", 0) or 0),
+        llm_calls=llm_calls,
+        tool_calls=tool_calls,
+        tokens_in=tokens_in,
+        tokens_out=tokens_out,
     )
     decision = req.brief.decision if req.brief is not None else None
     storage.finalize_run(run_id, decision=decision, log_path=str(archive_path))

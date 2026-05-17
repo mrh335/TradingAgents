@@ -496,6 +496,35 @@ export const Tokens = {
     request<TokenSummary>(
       `/tokens/summary?days=${days}&group_by_provider=${groupByProvider}`,
     ),
+  backfill: () =>
+    request<{ updated: number; skipped: number; errors: string[]; note: string }>(
+      "/tokens/backfill",
+      { method: "POST" },
+    ),
+};
+
+// ---- Dashboard (cross-cutting portfolio views) -------------------------
+
+export type FreshnessRow = {
+  ticker: string;
+  shares: number;
+  last_run_id: string | null;
+  last_run_date: string | null;
+  last_run_completed_at: string | null;
+  days_since: number | null;
+  last_decision: string | null;
+  last_provider: string | null;
+  runs_total: number;
+};
+
+export const Dashboard = {
+  freshness: (params?: { include_watchlist?: boolean; include_positions?: boolean }) => {
+    const qp = new URLSearchParams();
+    if (params?.include_watchlist === false) qp.set("include_watchlist", "false");
+    if (params?.include_positions === false) qp.set("include_positions", "false");
+    const qs = qp.toString();
+    return request<FreshnessRow[]>(`/dashboard/freshness${qs ? `?${qs}` : ""}`);
+  },
 };
 
 export const RunQueue = {

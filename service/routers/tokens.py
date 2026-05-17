@@ -28,6 +28,43 @@ from gui import storage
 router = APIRouter(prefix="/tokens", tags=["tokens"])
 
 
+def _estimate_tokens_for_run(run_row: dict) -> tuple[int, int]:
+    """Re-estimate tokens for an existing run by reading its on-disk
+    archive. Used by /backfill to light up legacy rows where the client
+    didn't post token data.
+
+    Uses the same heuristic the /runs/import path uses (chars/4 with a
+    ~2x input multiplier). See service/routers/runs.py for details.
+    """
+    from pathlib import Path
+    import json
+    log_path = run_row.get("log_path")
+    if not log_path or not Path(log_path).exists():
+        return 0, 0
+    try:
+        archive = json.loads(Path(log_path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return 0, 0
+    state = (archive.get("state") or {}) if isinstance(archive, dict) else {}
+    if not isinstance(state, dict):
+        return 0, 0
+
+    output_fields = (
+        "market_report", "sentiment_report", "news_report",
+        "fundamentals_report", "trader_investment_plan", "final_trade_decision",
+    )
+    out_chars = sum(
+        len(state.get(f) or "") for f in output_fields if isinstance(state.get(f), str)
+    )
+    for blob in (state.get("investment_debate_state"), state.get("risk_debate_state")):
+        if isinstance(blob, dict):
+            for v in blob.values():
+                if isinstance(v, str):
+                    out_chars += len(v)
+    in_chars = int(out_chars * 2.0)
+    return int(in_chars / 4.0), int(out_chars / 4.0)
+
+
 # Default rough $/1M tokens (cost estimate). Updated when providers
 # publish new pricing — this is for in-app cost projection, not for
 # accounting. Values are roughly the cheaper deep-think tier at each
@@ -195,3 +232,46 @@ def summary(
         },
         providers=sorted(providers_seen),
     )
+
+
+@router.post("/backfill")
+def backfill_zero_token_rows() -> dict:
+    """Walk every status='done' run with tokens_in=tokens_out=0 and
+    estimate tokens from its on-disk archive.
+
+    One-time cleanup endpoint for runs imported before the server-side
+    fallback estimate was added (legacy Claude Desktop skill submissions
+    that didn't include token counts in archive.metadata). Idempotent —
+    re-running only touches rows still at zero.
+    """
+    rows = storage.list_token_events(limit=20000)
+    updated = 0
+    skipped = 0
+    errors: list[str] = []
+    for r in rows:
+        ti = int(r.get("tokens_in") or 0)
+        to = int(r.get("tokens_out") or 0)
+        if ti > 0 or to > 0:
+            skipped += 1
+            continue
+        est_in, est_out = _estimate_tokens_for_run(r)
+        if est_in == 0 and est_out == 0:
+            skipped += 1
+            continue
+        try:
+            storage.update_run_stats(
+                r["run_id"],
+                llm_calls=int(r.get("llm_calls") or 0),
+                tool_calls=int(r.get("tool_calls") or 0),
+                tokens_in=est_in,
+                tokens_out=est_out,
+            )
+            updated += 1
+        except Exception as e:
+            errors.append(f"{r['run_id']}: {e}")
+    return {
+        "updated": updated,
+        "skipped": skipped,
+        "errors": errors,
+        "note": "Estimates use chars/4 heuristic. Re-publish via the skill to get accurate tiktoken numbers.",
+    }

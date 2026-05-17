@@ -26,6 +26,7 @@ from service.routers import (
     calendar as calendar_router,
     charts as charts_router,
     chat,
+    dashboard as dashboard_router,
     exports,
     health,
     memory,
@@ -129,6 +130,7 @@ app.include_router(sidecars_router.router)
 app.include_router(run_queue_router.router)
 app.include_router(restrictions_router.router)
 app.include_router(tokens_router.router)
+app.include_router(dashboard_router.router)
 
 
 def main() -> int:
