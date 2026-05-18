@@ -140,6 +140,7 @@ app.include_router(tokens_router.router)
 app.include_router(dashboard_router.router)
 app.include_router(discover_router.router)
 app.include_router(schedules_router.router)
+app.include_router(backtest_router.router)
 
 
 def main() -> int:

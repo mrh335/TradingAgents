@@ -1,23 +1,80 @@
 "use client";
 
 import Link from "next/link";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Schedules, type Schedule } from "@/lib/api";
 
-// Preset cadences. Map a friendly label → standard 5-field cron expression
-// evaluated in the API container's local timezone (typically UTC unless
-// you've set TZ in docker-compose).
-const CADENCE_PRESETS: { label: string; cron: string; description: string }[] = [
-  { label: "Every weekday morning",       cron: "0 6 * * 1-5",   description: "Mon-Fri 6:00 AM" },
-  { label: "Every weekday after market",  cron: "0 17 * * 1-5",  description: "Mon-Fri 5:00 PM (after US close)" },
-  { label: "Every weekday at noon",       cron: "0 12 * * 1-5",  description: "Mon-Fri 12:00 PM" },
-  { label: "Mon/Wed/Fri morning",         cron: "0 7 * * 1,3,5", description: "Three times a week at 7 AM" },
-  { label: "Every other day at 7 AM",     cron: "0 7 */2 * *",   description: "Every 2 days" },
-  { label: "Every Sunday evening",        cron: "0 19 * * 0",    description: "Weekly Sun 7 PM" },
-  { label: "Every day at 6 AM",           cron: "0 6 * * *",     description: "Daily 6:00 AM (incl. weekends)" },
-  { label: "Custom",                      cron: "",              description: "Type your own 5-field cron expression" },
+// ─── Cron building blocks ─────────────────────────────────────────────
+// Cron day-of-week: Sun=0, Mon=1, ..., Sat=6 (standard 5-field).
+type DowKey = "Sun" | "Mon" | "Tue" | "Wed" | "Thu" | "Fri" | "Sat";
+const DOW_ORDER: DowKey[] = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const DOW_TO_CRON: Record<DowKey, number> = {
+  Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6,
+};
+
+// Curated model catalogue per provider — same source-of-truth as /run.
+const MODEL_CATALOG: Record<string, { value: string; label: string }[]> = {
+  anthropic: [
+    { value: "claude-opus-4-7", label: "claude-opus-4-7 — top tier" },
+    { value: "claude-sonnet-4-6", label: "claude-sonnet-4-6 — balanced (default deep)" },
+    { value: "claude-sonnet-4-5", label: "claude-sonnet-4-5" },
+    { value: "claude-haiku-4-5", label: "claude-haiku-4-5 — fast + cheap (default quick)" },
+  ],
+  openai: [
+    { value: "gpt-5", label: "gpt-5 — top tier" },
+    { value: "gpt-4o", label: "gpt-4o" },
+    { value: "gpt-4-turbo", label: "gpt-4-turbo" },
+    { value: "gpt-4o-mini", label: "gpt-4o-mini — cheap" },
+    { value: "o1", label: "o1 — reasoning" },
+    { value: "o1-mini", label: "o1-mini" },
+  ],
+  google: [
+    { value: "gemini-2.5-pro", label: "gemini-2.5-pro" },
+    { value: "gemini-2-pro", label: "gemini-2-pro" },
+    { value: "gemini-2-flash", label: "gemini-2-flash" },
+  ],
+  ollama: [],
+};
+const OTHER = "__other__";
+
+// Quick-start presets — populate the builder so the user can see the
+// shape, then customize.
+const PRESETS: { label: string; days: DowKey[]; hour: number; minute: number; ampm: "AM" | "PM" }[] = [
+  { label: "Weekdays 6 AM", days: ["Mon","Tue","Wed","Thu","Fri"], hour: 6, minute: 0, ampm: "AM" },
+  { label: "Weekdays 5 PM (after close)", days: ["Mon","Tue","Wed","Thu","Fri"], hour: 5, minute: 0, ampm: "PM" },
+  { label: "Mon/Wed/Fri 7 AM", days: ["Mon","Wed","Fri"], hour: 7, minute: 0, ampm: "AM" },
+  { label: "Every day 6 AM", days: ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"], hour: 6, minute: 0, ampm: "AM" },
+  { label: "Sunday 7 PM", days: ["Sun"], hour: 7, minute: 0, ampm: "PM" },
 ];
+
+function to24h(hour: number, ampm: "AM" | "PM"): number {
+  // hour is in [1..12]
+  if (ampm === "AM") return hour === 12 ? 0 : hour;
+  return hour === 12 ? 12 : hour + 12;
+}
+
+function buildCron(days: DowKey[], hour: number, minute: number, ampm: "AM" | "PM"): string {
+  if (days.length === 0) return "";
+  const h24 = to24h(hour, ampm);
+  const dow = days
+    .map((d) => DOW_TO_CRON[d])
+    .sort((a, b) => a - b)
+    .join(",");
+  return `${minute} ${h24} * * ${dow}`;
+}
+
+function describeBuild(days: DowKey[], hour: number, minute: number, ampm: "AM" | "PM"): string {
+  if (days.length === 0) return "Pick at least one day";
+  // Compact day display
+  let dayDesc: string;
+  if (days.length === 7) dayDesc = "every day";
+  else if (days.length === 5 && days.every((d) => d !== "Sat" && d !== "Sun")) dayDesc = "weekdays";
+  else if (days.length === 2 && days.includes("Sat") && days.includes("Sun")) dayDesc = "weekends";
+  else dayDesc = days.join("/");
+  const mm = minute.toString().padStart(2, "0");
+  return `${dayDesc} at ${hour}:${mm} ${ampm} Pacific`;
+}
 
 function fmtTs(iso: string | null): string {
   if (!iso) return "—";
@@ -36,17 +93,16 @@ export default function SchedulesPage() {
     refetchInterval: 30_000,
   });
 
-  // ─── New schedule form state ──────────────────────────────────────
-  // The model/rounds fields are advanced overrides — most users just want
-  // ticker + cadence + (optionally) a note. Empty options means the worker
-  // (tradingagents-analyze skill) uses its own defaults: anthropic/
-  // sonnet-4-6/haiku-4-5 with 1 round each.
+  // ─── Form state ─────────────────────────────────────────────────────
   const [form, setForm] = useState<{
     ticker: string;
-    preset: string;
-    customCron: string;
+    days: DowKey[];
+    hour: number;       // 1..12
+    minute: number;     // 0,15,30,45
+    ampm: "AM" | "PM";
     notes: string;
     analysis_mode: "incremental" | "fresh";
+    overrideDays: DowKey[];     // days on which to flip to the other mode
     overrideModel: boolean;
     provider: string;
     deep_model: string;
@@ -55,15 +111,13 @@ export default function SchedulesPage() {
     risk_rounds: number;
   }>({
     ticker: "",
-    preset: CADENCE_PRESETS[0].label,
-    customCron: "",
+    days: ["Mon", "Tue", "Wed", "Thu", "Fri"],
+    hour: 6,
+    minute: 0,
+    ampm: "AM",
     notes: "",
-    // Default schedules to FRESH because scheduled runs are precisely
-    // the case where decision-anchoring drift compounds — each
-    // incremental run reuses yesterday's PM context, which uses the
-    // day-before's PM context, etc. Forcing fresh on every schedule
-    // breaks that drift while still letting the user override per-run.
     analysis_mode: "fresh",
+    overrideDays: [],
     overrideModel: false,
     provider: "anthropic",
     deep_model: "claude-sonnet-4-6",
@@ -72,19 +126,42 @@ export default function SchedulesPage() {
     risk_rounds: 1,
   });
 
-  const presetCron =
-    CADENCE_PRESETS.find((p) => p.label === form.preset)?.cron ?? "";
-  const effectiveCron = form.preset === "Custom" ? form.customCron : presetCron;
+  const effectiveCron = useMemo(
+    () => buildCron(form.days, form.hour, form.minute, form.ampm),
+    [form.days, form.hour, form.minute, form.ampm],
+  );
+
+  function toggleDay(d: DowKey) {
+    setForm((f) => ({
+      ...f,
+      days: f.days.includes(d) ? f.days.filter((x) => x !== d) : [...f.days, d],
+    }));
+  }
+  function toggleOverrideDay(d: DowKey) {
+    setForm((f) => ({
+      ...f,
+      overrideDays: f.overrideDays.includes(d)
+        ? f.overrideDays.filter((x) => x !== d)
+        : [...f.overrideDays, d],
+    }));
+  }
+  function applyPreset(p: typeof PRESETS[number]) {
+    setForm((f) => ({ ...f, days: p.days, hour: p.hour, minute: p.minute, ampm: p.ampm }));
+  }
 
   const create = useMutation({
     mutationFn: () => {
-      // Only attach per-schedule model overrides if the user explicitly
-      // toggled Advanced. Otherwise leave options empty — the worker
-      // uses its own defaults. Always include analysis_mode so the
-      // scheduled run knows whether to inject memory.
       const options: Record<string, any> = {
         analysis_mode: form.analysis_mode,
       };
+      // Per-weekday memory override — backend scheduler reads this and
+      // flips analysis_mode for the named days when the cron fires.
+      if (form.overrideDays.length > 0) {
+        const otherMode = form.analysis_mode === "fresh" ? "incremental" : "fresh";
+        options.analysis_mode_overrides = Object.fromEntries(
+          form.overrideDays.map((d) => [d, otherMode]),
+        );
+      }
       if (form.overrideModel) {
         options.provider = form.provider;
         options.deep_model = form.deep_model;
@@ -109,13 +186,12 @@ export default function SchedulesPage() {
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["schedules"] });
-      setForm({ ...form, ticker: "", notes: "", customCron: "" });
+      setForm({ ...form, ticker: "", notes: "" });
     },
   });
 
   const toggle = useMutation({
-    mutationFn: (s: Schedule) =>
-      Schedules.update(s.id, { enabled: !s.enabled }),
+    mutationFn: (s: Schedule) => Schedules.update(s.id, { enabled: !s.enabled }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["schedules"] }),
   });
   const fire = useMutation({
@@ -136,26 +212,23 @@ export default function SchedulesPage() {
       <header>
         <h1 className="text-2xl font-bold">Auto-run schedules</h1>
         <p className="text-muted text-sm">
-          Per-ticker analysis schedules. The background scheduler in the API
-          container ticks every minute, evaluates each enabled row's cron
-          expression, and posts a queue item when due. Your existing
-          queue-drain cron then picks it up — so the loop closes itself.
+          Per-ticker analysis schedules. The background scheduler ticks every
+          minute, evaluates each enabled row, and posts a queue item when due.
+          Your Claude Desktop drain cron picks it up — so the loop closes itself.
         </p>
         <p className="text-muted text-xs mt-1">
-          Cron expressions evaluated in the API container's local timezone
-          (typically UTC unless you've set <code>TZ</code> in docker-compose).
+          Times shown in Pacific time (TZ=America/Los_Angeles on the api container).
         </p>
       </header>
 
-      {/* ─── New schedule (simple form) ─── */}
+      {/* ─── Builder form ─── */}
       <form
-        className="card space-y-4"
+        className="card space-y-5"
         onSubmit={(e) => {
           e.preventDefault();
           create.mutate();
         }}
       >
-        {/* Three essential fields — ticker, cadence, optional notes */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-3 items-end">
           <div>
             <label className="label">Ticker</label>
@@ -167,37 +240,7 @@ export default function SchedulesPage() {
               required
             />
           </div>
-          <div>
-            <label className="label">Cadence</label>
-            <select
-              className="input w-full"
-              value={form.preset}
-              onChange={(e) => setForm({ ...form, preset: e.target.value })}
-            >
-              {CADENCE_PRESETS.map((p) => (
-                <option key={p.label} value={p.label}>
-                  {p.label}{p.cron && p.label !== "Custom" ? ` — ${p.description}` : ""}
-                </option>
-              ))}
-            </select>
-          </div>
-          <div>
-            <label className="label">
-              {form.preset === "Custom" ? "Custom cron expression" : "Effective cron"}
-            </label>
-            {form.preset === "Custom" ? (
-              <input
-                className="input w-full font-mono text-xs"
-                value={form.customCron}
-                onChange={(e) => setForm({ ...form, customCron: e.target.value })}
-                placeholder="0 6 * * 1-5"
-                required
-              />
-            ) : (
-              <code className="block input bg-bg text-xs">{presetCron}</code>
-            )}
-          </div>
-          <div className="md:col-span-3">
+          <div className="md:col-span-2">
             <label className="label">Notes <span className="text-muted">(optional)</span></label>
             <input
               className="input w-full"
@@ -207,49 +250,186 @@ export default function SchedulesPage() {
               maxLength={200}
             />
           </div>
-          <div className="md:col-span-3">
-            <label className="label">Memory mode</label>
-            <div className="flex gap-4">
-              <label className="flex items-start gap-2 text-sm cursor-pointer">
-                <input
-                  type="radio"
-                  checked={form.analysis_mode === "fresh"}
-                  onChange={() => setForm({ ...form, analysis_mode: "fresh" })}
-                  className="mt-1"
-                />
-                <span>
-                  <span className="font-semibold">Fresh</span>{" "}
-                  <span className="text-xs text-muted">(recommended for schedules)</span>
-                  <span className="block text-xs text-muted max-w-xl">
-                    No memory injection. Recommended for recurring schedules
-                    so the PM doesn&apos;t anchor on yesterday&apos;s decision
-                    each day.
-                  </span>
-                </span>
-              </label>
-              <label className="flex items-start gap-2 text-sm cursor-pointer">
-                <input
-                  type="radio"
-                  checked={form.analysis_mode === "incremental"}
-                  onChange={() => setForm({ ...form, analysis_mode: "incremental" })}
-                  className="mt-1"
-                />
-                <span>
-                  <span className="font-semibold">Incremental</span>
-                  <span className="block text-xs text-muted max-w-xl">
-                    PM sees prior decisions for this ticker. Faster
-                    convergence but anchors on yesterday.
-                  </span>
-                </span>
-              </label>
+        </div>
+
+        {/* ─── Cadence builder ─── */}
+        <div className="border border-border rounded-md p-3 space-y-3">
+          <div className="text-sm font-semibold">When should this run?</div>
+
+          {/* Day chips */}
+          <div>
+            <div className="text-xs text-muted mb-1">Days</div>
+            <div className="flex flex-wrap gap-1">
+              {DOW_ORDER.map((d) => (
+                <button
+                  key={d}
+                  type="button"
+                  onClick={() => toggleDay(d)}
+                  className={`px-3 py-1.5 text-sm rounded border transition-colors ${
+                    form.days.includes(d)
+                      ? "bg-accent text-white border-accent"
+                      : "border-border text-muted hover:text-fg"
+                  }`}
+                >
+                  {d}
+                </button>
+              ))}
+              <button
+                type="button"
+                onClick={() => setForm({ ...form, days: ["Mon","Tue","Wed","Thu","Fri"] })}
+                className="px-3 py-1.5 text-xs rounded text-accent hover:underline ml-2"
+              >
+                weekdays
+              </button>
+              <button
+                type="button"
+                onClick={() => setForm({ ...form, days: ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"] })}
+                className="px-3 py-1.5 text-xs rounded text-accent hover:underline"
+              >
+                every day
+              </button>
             </div>
+          </div>
+
+          {/* Time picker */}
+          <div className="flex items-center gap-2">
+            <div className="text-xs text-muted">Time</div>
+            <select
+              className="input"
+              value={form.hour}
+              onChange={(e) => setForm({ ...form, hour: Number(e.target.value) })}
+            >
+              {Array.from({ length: 12 }, (_, i) => i + 1).map((h) => (
+                <option key={h} value={h}>{h}</option>
+              ))}
+            </select>
+            <span>:</span>
+            <select
+              className="input"
+              value={form.minute}
+              onChange={(e) => setForm({ ...form, minute: Number(e.target.value) })}
+            >
+              {[0, 15, 30, 45].map((m) => (
+                <option key={m} value={m}>{m.toString().padStart(2, "0")}</option>
+              ))}
+            </select>
+            <select
+              className="input"
+              value={form.ampm}
+              onChange={(e) => setForm({ ...form, ampm: e.target.value as "AM" | "PM" })}
+            >
+              <option value="AM">AM</option>
+              <option value="PM">PM</option>
+            </select>
+            <span className="text-xs text-muted ml-2">Pacific</span>
+          </div>
+
+          {/* Preview */}
+          <div className="text-xs text-muted">
+            Cadence: <span className="text-fg font-semibold">{describeBuild(form.days, form.hour, form.minute, form.ampm)}</span>
+            <br />
+            Cron: <code className="text-fg">{effectiveCron || "—"}</code>
+          </div>
+
+          {/* Quick presets */}
+          <div className="flex flex-wrap gap-2">
+            <span className="text-xs text-muted self-center">Quick presets:</span>
+            {PRESETS.map((p) => (
+              <button
+                key={p.label}
+                type="button"
+                onClick={() => applyPreset(p)}
+                className="px-2 py-1 text-xs rounded border border-border text-muted hover:text-fg"
+              >
+                {p.label}
+              </button>
+            ))}
           </div>
         </div>
 
-        {/* Advanced overrides — collapsed by default. Most users never open this. */}
+        {/* ─── Memory mode ─── */}
+        <div className="border border-border rounded-md p-3 space-y-3">
+          <div className="text-sm font-semibold">Memory mode</div>
+          <div className="flex gap-4">
+            <label className="flex items-start gap-2 text-sm cursor-pointer">
+              <input
+                type="radio"
+                checked={form.analysis_mode === "fresh"}
+                onChange={() => setForm({ ...form, analysis_mode: "fresh" })}
+                className="mt-1"
+              />
+              <span>
+                <span className="font-semibold">Fresh</span>{" "}
+                <span className="text-xs text-muted">(recommended)</span>
+                <span className="block text-xs text-muted max-w-xl">
+                  No memory injection. PM evaluates each run from scratch — breaks
+                  decision-anchoring drift on recurring runs.
+                </span>
+              </span>
+            </label>
+            <label className="flex items-start gap-2 text-sm cursor-pointer">
+              <input
+                type="radio"
+                checked={form.analysis_mode === "incremental"}
+                onChange={() => setForm({ ...form, analysis_mode: "incremental" })}
+                className="mt-1"
+              />
+              <span>
+                <span className="font-semibold">Incremental</span>
+                <span className="block text-xs text-muted max-w-xl">
+                  PM sees prior decisions for this ticker. Faster convergence
+                  but anchors on yesterday.
+                </span>
+              </span>
+            </label>
+          </div>
+
+          {/* Per-weekday override — for "Mon-Thu incremental, Fri fresh" */}
+          <div className="pt-2 border-t border-border">
+            <div className="text-xs text-muted mb-1">
+              Override on specific days (run those days in the opposite mode):
+            </div>
+            <div className="flex flex-wrap gap-1">
+              {DOW_ORDER.filter((d) => form.days.includes(d)).map((d) => (
+                <button
+                  key={d}
+                  type="button"
+                  onClick={() => toggleOverrideDay(d)}
+                  className={`px-3 py-1 text-xs rounded border transition-colors ${
+                    form.overrideDays.includes(d)
+                      ? "bg-warning text-white border-warning"
+                      : "border-border text-muted hover:text-fg"
+                  }`}
+                  title={
+                    form.overrideDays.includes(d)
+                      ? `${d} runs as ${form.analysis_mode === "fresh" ? "incremental" : "fresh"} (opposite of default)`
+                      : `${d} runs as ${form.analysis_mode} (default)`
+                  }
+                >
+                  {d}
+                </button>
+              ))}
+              {form.days.length === 0 && (
+                <span className="text-xs text-muted">Pick days above first</span>
+              )}
+            </div>
+            {form.overrideDays.length > 0 && (
+              <div className="text-xs text-muted mt-2">
+                Override active: <span className="text-warning font-semibold">
+                  {form.overrideDays.join(", ")}
+                </span>{" "}
+                will run as <span className="font-semibold">
+                  {form.analysis_mode === "fresh" ? "incremental" : "fresh"}
+                </span>; other days as <span className="font-semibold">{form.analysis_mode}</span>.
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* ─── Advanced overrides ─── */}
         <details className="border border-border rounded-md">
           <summary className="cursor-pointer px-3 py-2 text-sm text-muted hover:text-fg">
-            Advanced — override model / depth (leave closed to use defaults)
+            Advanced — override model / depth (leave closed for skill defaults)
           </summary>
           <div className="px-3 pb-3 pt-1 space-y-3">
             <label className="flex items-center gap-2 text-sm">
@@ -258,7 +438,7 @@ export default function SchedulesPage() {
                 checked={form.overrideModel}
                 onChange={(e) => setForm({ ...form, overrideModel: e.target.checked })}
               />
-              Apply these overrides to runs from this schedule
+              Apply these overrides
             </label>
             <div
               className={`grid grid-cols-2 md:grid-cols-3 gap-3 ${
@@ -278,22 +458,18 @@ export default function SchedulesPage() {
                   <option value="ollama">Ollama (local)</option>
                 </select>
               </div>
-              <div>
-                <label className="label">Deep-think model</label>
-                <input
-                  className="input w-full font-mono text-xs"
-                  value={form.deep_model}
-                  onChange={(e) => setForm({ ...form, deep_model: e.target.value })}
-                />
-              </div>
-              <div>
-                <label className="label">Quick-think model</label>
-                <input
-                  className="input w-full font-mono text-xs"
-                  value={form.quick_model}
-                  onChange={(e) => setForm({ ...form, quick_model: e.target.value })}
-                />
-              </div>
+              <ModelDropdown
+                label="Deep-think model"
+                provider={form.provider}
+                value={form.deep_model}
+                onChange={(v) => setForm({ ...form, deep_model: v })}
+              />
+              <ModelDropdown
+                label="Quick-think model"
+                provider={form.provider}
+                value={form.quick_model}
+                onChange={(v) => setForm({ ...form, quick_model: v })}
+              />
               <div>
                 <label className="label">Bull/Bear rounds</label>
                 <input
@@ -317,17 +493,15 @@ export default function SchedulesPage() {
                 />
               </div>
             </div>
-            <p className="text-xs text-muted">
-              Leave this section closed (or the checkbox off) to use the worker
-              skill&apos;s defaults — currently <code>anthropic / claude-sonnet-4-6 / claude-haiku-4-5</code>{" "}
-              with 1 round of each debate.
-            </p>
           </div>
         </details>
 
         <div className="flex justify-end items-center gap-3">
           {!form.ticker && (
             <span className="text-muted text-xs">Type a ticker to enable</span>
+          )}
+          {form.days.length === 0 && (
+            <span className="text-warning text-xs">Pick at least one day</span>
           )}
           {create.isError && (
             <span className="text-danger text-sm">
@@ -346,15 +520,12 @@ export default function SchedulesPage() {
 
       {/* ─── Active schedules ─── */}
       <section>
-        <h2 className="text-lg font-semibold mb-3">
-          Active ({enabled.length})
-        </h2>
+        <h2 className="text-lg font-semibold mb-3">Active ({enabled.length})</h2>
         {q.isLoading ? (
           <div className="text-muted text-sm">Loading…</div>
         ) : enabled.length === 0 ? (
           <div className="card text-sm text-muted">
-            No active schedules. Add one above. Each scheduled run drops a
-            queue item that your existing drain cron picks up.
+            No active schedules. Add one above.
           </div>
         ) : (
           <ScheduleTable
@@ -370,7 +541,6 @@ export default function SchedulesPage() {
         )}
       </section>
 
-      {/* ─── Paused / disabled ─── */}
       {disabled.length > 0 && (
         <section>
           <h2 className="text-lg font-semibold mb-3 text-muted">
@@ -381,8 +551,7 @@ export default function SchedulesPage() {
             onToggle={(s) => toggle.mutate(s)}
             onFire={(id) => fire.mutate(id)}
             onDelete={(id) => {
-              if (confirm("Delete this schedule?"))
-                remove.mutate(id);
+              if (confirm("Delete this schedule?")) remove.mutate(id);
             }}
             busy={toggle.isPending || fire.isPending || remove.isPending}
           />
@@ -390,14 +559,62 @@ export default function SchedulesPage() {
       )}
 
       <div className="card text-xs text-muted">
-        <strong>How it works.</strong> When a schedule's cron fires, the
-        backend POSTs to <code>/run-queue</code> with the ticker + options
-        from this row. The queue item gets <code>requested_by: scheduler:&lt;id&gt;</code>{" "}
-        so you can see which schedule created which run on the{" "}
-        <Link href="/queue" className="text-accent hover:underline">/queue</Link>{" "}
-        page. The worker (typically your Claude Desktop scheduled-tasks
-        drain) then claims and processes it.
+        <strong>How it works.</strong> When a schedule fires, the backend POSTs
+        to <code>/run-queue</code> with the ticker + options from this row.
+        Memory mode (and per-day overrides) carry through; the worker checks
+        <code> options.analysis_mode</code> and bypasses the memory log when
+        fresh. See <Link href="/queue" className="text-accent hover:underline">/queue</Link>{" "}
+        for live items.
       </div>
+    </div>
+  );
+}
+
+function ModelDropdown({
+  label, provider, value, onChange,
+}: {
+  label: string;
+  provider: string;
+  value: string;
+  onChange: (v: string) => void;
+}) {
+  const catalog = MODEL_CATALOG[provider] ?? [];
+  const inCatalog = catalog.find((m) => m.value === value);
+  const showCustom = !inCatalog && provider !== "ollama";
+  return (
+    <div>
+      <label className="label">{label}</label>
+      {catalog.length === 0 ? (
+        <input
+          className="input w-full font-mono text-xs"
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          placeholder={provider === "ollama" ? "ollama-model-name" : "model-name"}
+        />
+      ) : (
+        <select
+          className="input w-full text-xs"
+          value={showCustom ? OTHER : value}
+          onChange={(e) => {
+            const v = e.target.value;
+            if (v === OTHER) onChange(value || "");
+            else onChange(v);
+          }}
+        >
+          {catalog.map((m) => (
+            <option key={m.value} value={m.value}>{m.label}</option>
+          ))}
+          <option value={OTHER}>Other (custom)…</option>
+        </select>
+      )}
+      {showCustom && (
+        <input
+          className="input w-full mt-1 text-xs font-mono"
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          placeholder="Type any model name your provider supports"
+        />
+      )}
     </div>
   );
 }
@@ -418,73 +635,65 @@ function ScheduleTable({
           <tr>
             <th className="py-2">Ticker</th>
             <th>Cadence</th>
-            <th>Cron</th>
-            <th>Model</th>
+            <th>Memory mode</th>
             <th>Last fired</th>
             <th>Next fire</th>
             <th></th>
           </tr>
         </thead>
         <tbody>
-          {rows.map((s) => (
-            <tr key={s.id} className="border-t border-border align-top">
-              <td className="py-2 font-semibold">
-                {s.ticker}
-                {s.notes && (
-                  <div className="text-muted text-xs">{s.notes}</div>
-                )}
-              </td>
-              <td className="text-xs">
-                {s.cadence_human || s.cron_expression}
-              </td>
-              <td className="text-xs font-mono text-muted">{s.cron_expression}</td>
-              <td className="text-xs text-muted">
-                {s.options?.provider ?? "—"}
-                <div>{String(s.options?.deep_model ?? "—")}</div>
-              </td>
-              <td className="text-xs text-muted">
-                {fmtTs(s.last_fired_at)}
-                {s.last_error && (
-                  <div className="text-danger mt-0.5 max-w-xs whitespace-normal">
-                    ⚠ {s.last_error.slice(0, 120)}
-                  </div>
-                )}
-                {s.last_queue_id && !s.last_error && (
-                  <Link
-                    href="/queue"
-                    className="text-accent hover:underline text-[10px]"
-                  >
-                    queue: {s.last_queue_id.slice(0, 8)}…
-                  </Link>
-                )}
-              </td>
-              <td className="text-xs text-muted">{fmtTs(s.next_fire_at)}</td>
-              <td className="text-right whitespace-nowrap">
-                <button
-                  className="btn text-xs"
-                  onClick={() => onFire(s.id)}
-                  disabled={busy}
-                  title="Fire this schedule right now (skips the cron check)"
-                >
-                  ▶ Fire now
-                </button>{" "}
-                <button
-                  className="btn text-xs"
-                  onClick={() => onToggle(s)}
-                  disabled={busy}
-                >
-                  {s.enabled ? "Pause" : "Resume"}
-                </button>{" "}
-                <button
-                  className="btn text-xs"
-                  onClick={() => onDelete(s.id)}
-                  disabled={busy}
-                >
-                  Delete
-                </button>
-              </td>
-            </tr>
-          ))}
+          {rows.map((s) => {
+            const overrides = (s.options?.analysis_mode_overrides ?? {}) as Record<string, string>;
+            const overrideDays = Object.keys(overrides);
+            return (
+              <tr key={s.id} className="border-t border-border align-top">
+                <td className="py-2 font-semibold">
+                  {s.ticker}
+                  {s.notes && <div className="text-muted text-xs">{s.notes}</div>}
+                </td>
+                <td className="text-xs">
+                  {s.cadence_human || s.cron_expression}
+                  <div className="text-muted text-[10px] font-mono">{s.cron_expression}</div>
+                </td>
+                <td className="text-xs">
+                  <span className="font-semibold">{s.options?.analysis_mode ?? "incremental"}</span>
+                  {overrideDays.length > 0 && (
+                    <div className="text-warning text-[10px]">
+                      override: {overrideDays.join(",")} → {Object.values(overrides)[0]}
+                    </div>
+                  )}
+                </td>
+                <td className="text-xs text-muted">
+                  {fmtTs(s.last_fired_at)}
+                  {s.last_error && (
+                    <div className="text-danger mt-0.5 max-w-xs whitespace-normal">
+                      ⚠ {s.last_error.slice(0, 120)}
+                    </div>
+                  )}
+                  {s.last_queue_id && !s.last_error && (
+                    <Link
+                      href="/queue"
+                      className="text-accent hover:underline text-[10px]"
+                    >
+                      queue: {s.last_queue_id.slice(0, 8)}…
+                    </Link>
+                  )}
+                </td>
+                <td className="text-xs text-muted">{fmtTs(s.next_fire_at)}</td>
+                <td className="text-right whitespace-nowrap">
+                  <button className="btn text-xs" onClick={() => onFire(s.id)} disabled={busy}>
+                    ▶ Fire
+                  </button>{" "}
+                  <button className="btn text-xs" onClick={() => onToggle(s)} disabled={busy}>
+                    {s.enabled ? "Pause" : "Resume"}
+                  </button>{" "}
+                  <button className="btn text-xs" onClick={() => onDelete(s.id)} disabled={busy}>
+                    Delete
+                  </button>
+                </td>
+              </tr>
+            );
+          })}
         </tbody>
       </table>
     </div>

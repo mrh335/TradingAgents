@@ -612,6 +612,74 @@ export const Discover = {
     ),
 };
 
+// ---- Backtest (realized return + hit rate) -----------------------------
+
+export type BacktestWindow = {
+  days: number;
+  end_date: string | null;
+  ticker_return_pct: number | null;
+  benchmark_return_pct: number | null;
+  alpha_pct: number | null;
+  horizon_reached: boolean;
+  win: boolean | null;
+};
+
+export type BacktestResult = {
+  run_id: string;
+  ticker: string;
+  trade_date: string;
+  decision: string | null;
+  provider: string | null;
+  deep_model: string | null;
+  benchmark: string;
+  windows: BacktestWindow[];
+  computed_at: string;
+  note: string | null;
+};
+
+export type HitRateCell = {
+  label: string;
+  runs: number;
+  wins: number;
+  losses: number;
+  skipped: number;
+  hit_rate_pct: number | null;
+  mean_alpha_pct: number | null;
+};
+
+export type BacktestSummaryResponse = {
+  window_days: number;
+  overall: HitRateCell;
+  by_decision: HitRateCell[];
+  by_provider: HitRateCell[];
+  by_model: HitRateCell[];
+  sample_rows: Array<{
+    run_id: string;
+    ticker: string;
+    trade_date: string;
+    decision: string | null;
+    provider: string | null;
+    deep_model: string | null;
+    ticker_return_pct: number | null;
+    benchmark_return_pct: number | null;
+    alpha_pct: number | null;
+    horizon_reached: boolean;
+    win: boolean | null;
+  }>;
+};
+
+export const Backtest = {
+  summary: (windowDays: number = 30) =>
+    request<BacktestSummaryResponse>(`/backtest/?window_days=${windowDays}`),
+  get: (runId: string, force = false) =>
+    request<BacktestResult>(`/backtest/${runId}${force ? "?force=true" : ""}`),
+  recomputeAll: () =>
+    request<{ computed: number; errors: number; error_details: string[] }>(
+      "/backtest/recompute-all",
+      { method: "POST" },
+    ),
+};
+
 // ---- Schedules (per-ticker auto-run scheduler) -------------------------
 
 export type Schedule = {

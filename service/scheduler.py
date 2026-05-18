@@ -47,6 +47,29 @@ def _parse_iso(value: Optional[str]) -> Optional[datetime]:
         return None
 
 
+_DOW_NAMES = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+
+
+def _apply_weekday_memory_override(options: dict, now: datetime) -> None:
+    """If options.analysis_mode_overrides is set, swap analysis_mode when
+    today's weekday matches one of the override keys.
+
+    Override shape (set by the /schedules UI):
+        {"Fri": "fresh"}  or  {"Mon": "incremental", "Wed": "incremental"}
+
+    This lets one schedule express "incremental Mon-Thu, fresh Friday"
+    without needing two separate schedule rows.
+    """
+    overrides = options.get("analysis_mode_overrides")
+    if not isinstance(overrides, dict) or not overrides:
+        return
+    today_name = _DOW_NAMES[now.weekday()]
+    override = overrides.get(today_name)
+    if override and override != options.get("analysis_mode"):
+        options["analysis_mode"] = override
+        options["_overridden_today"] = True  # diagnostic flag
+
+
 def _fire_schedule(row: dict, now: datetime) -> None:
     """Queue an analysis for one schedule and record the fire."""
     try:
@@ -58,6 +81,10 @@ def _fire_schedule(row: dict, now: datetime) -> None:
     # the schedule that created it.
     options.setdefault("schedule_id", row["id"])
     options.setdefault("schedule_notes", row.get("notes") or "")
+
+    # Apply per-weekday memory mode override if configured. Mutates options
+    # in place so the resulting queue item carries the effective mode.
+    _apply_weekday_memory_override(options, now)
 
     trade_date = now.date().isoformat()
     ticker = row["ticker"]
