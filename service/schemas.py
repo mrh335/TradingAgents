@@ -35,6 +35,19 @@ class RunCreateRequest(BaseModel):
             "news_data": "yfinance",
         }
     )
+    analysis_mode: str = Field(
+        default="incremental",
+        description=(
+            "How to handle prior-run memory:\n"
+            "- `incremental` (default): inject past_context from the memory log "
+            "  so the Portfolio Manager sees prior decisions and outcomes for "
+            "  this ticker. Faster convergence, but can anchor the PM on the "
+            "  prior decision and only adjust for recent events.\n"
+            "- `fresh`: bypass the memory log entirely. The PM evaluates the "
+            "  analysts' reports from scratch with no prior-decision context. "
+            "  Use periodically to break out of decision-anchoring drift."
+        ),
+    )
 
 
 class RunImportRequest(BaseModel):

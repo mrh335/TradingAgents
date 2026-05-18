@@ -96,6 +96,7 @@ export default function RunPage() {
       fundamental_data: "yfinance",
       news_data: "yfinance",
     },
+    analysis_mode: "incremental",
   });
 
   // Pull saved defaults once they load.
@@ -142,6 +143,7 @@ export default function RunPage() {
           debate_rounds: req.max_debate_rounds,
           risk_rounds: req.max_risk_discuss_rounds,
           data_vendors: req.data_vendors,
+          analysis_mode: req.analysis_mode ?? "incremental",
         },
         requested_by: "web-ui:/run",
       }),
@@ -313,6 +315,45 @@ export default function RunPage() {
               setForm({ ...form, max_risk_discuss_rounds: Number(e.target.value) })
             }
           />
+        </div>
+        <div className="col-span-full">
+          <label className="label">Memory mode</label>
+          <div className="flex gap-4 items-start">
+            <label className="flex items-start gap-2 cursor-pointer">
+              <input
+                type="radio"
+                name="analysis_mode"
+                value="incremental"
+                checked={(form.analysis_mode ?? "incremental") === "incremental"}
+                onChange={() => setForm({ ...form, analysis_mode: "incremental" })}
+                className="mt-1"
+              />
+              <span>
+                <span className="font-semibold text-sm">Incremental</span>
+                <span className="block text-xs text-muted max-w-xl">
+                  PM sees prior decisions for this ticker as context.
+                  Faster convergence; can anchor on the prior decision.
+                </span>
+              </span>
+            </label>
+            <label className="flex items-start gap-2 cursor-pointer">
+              <input
+                type="radio"
+                name="analysis_mode"
+                value="fresh"
+                checked={form.analysis_mode === "fresh"}
+                onChange={() => setForm({ ...form, analysis_mode: "fresh" })}
+                className="mt-1"
+              />
+              <span>
+                <span className="font-semibold text-sm">Fresh</span>
+                <span className="block text-xs text-muted max-w-xl">
+                  Bypass memory entirely. PM re-evaluates from scratch.
+                  Use periodically to break decision-anchoring drift.
+                </span>
+              </span>
+            </label>
+          </div>
         </div>
         <div className="col-span-full flex flex-wrap items-center justify-end gap-2">
           <button

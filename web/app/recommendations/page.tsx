@@ -56,6 +56,9 @@ export default function RecommendationsPage() {
           quick_model: "claude-haiku-4-5",
           debate_rounds: 1,
           risk_rounds: 1,
+          // Re-queue from /recommendations = explicit re-analysis intent
+          // → fresh by default to break decision-anchoring.
+          analysis_mode: "fresh",
         },
         requested_by: "web-ui:/recommendations",
       }),

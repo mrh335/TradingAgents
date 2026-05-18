@@ -126,6 +126,11 @@ export type RunCreateRequest = {
   max_debate_rounds: number;
   max_risk_discuss_rounds: number;
   data_vendors: Record<string, string>;
+  // "incremental" (default) injects the past_context from the memory log
+  // into the PM prompt; "fresh" bypasses memory entirely so the PM
+  // re-evaluates without anchoring on prior decisions. See
+  // gui/runner_worker.py for the server-side branch.
+  analysis_mode?: "incremental" | "fresh";
 };
 
 // ---- Watchlist + portfolio + streaming ---------------------------------

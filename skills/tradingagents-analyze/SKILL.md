@@ -470,13 +470,27 @@ the webapp's pay-per-call API key.
      "quick_model": "claude-haiku-4-5",
      "debate_rounds": 1,
      "risk_rounds": 1,
-     "data_vendors": {...}
+     "data_vendors": {...},
+     "analysis_mode": "fresh"   // or "incremental"
    }
    ```
-   These came from the Run-page form. Run the **standard single-ticker
-   flow** (Phase 0 → Phase 10) honoring these as overrides. **One
-   exception**: don't allocate a fresh `run_id` in Phase 0 — use the
-   queue item's `id` as a prefix so the resulting run is linkable:
+   These came from the Run-page form / Schedules / one-click re-queue.
+   Run the **standard single-ticker flow** (Phase 0 → Phase 10) honoring
+   these as overrides. Two important behaviors:
+
+   **a. `analysis_mode` controls memory injection** for the Portfolio
+   Manager phase. Default to `incremental` if missing:
+   - `incremental`: do Phase 0.5 (lookup_parent_run.py) normally; pass
+     the resulting past_context into the PM prompt as `Lessons from
+     prior decisions and outcomes`. Faster convergence but can anchor
+     the PM on yesterday's decision.
+   - `fresh`: SKIP Phase 0.5 entirely. The PM evaluates the analyst
+     reports from scratch with no prior-decision context. Required
+     periodically to break out of decision-anchoring drift.
+
+   **b. `run_id` allocation**: don't allocate a wholly-fresh `run_id`
+   in Phase 0 — use the queue item's `id` as a prefix so the resulting
+   run is linkable:
    `run_id = "queue-" + queue_item["id"][:8] + "-" + uuid4()[:8]`.
 
 4. **Publish the result** to the framework with `scripts/publish.py`

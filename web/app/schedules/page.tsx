@@ -41,12 +41,29 @@ export default function SchedulesPage() {
   // ticker + cadence + (optionally) a note. Empty options means the worker
   // (tradingagents-analyze skill) uses its own defaults: anthropic/
   // sonnet-4-6/haiku-4-5 with 1 round each.
-  const [form, setForm] = useState({
+  const [form, setForm] = useState<{
+    ticker: string;
+    preset: string;
+    customCron: string;
+    notes: string;
+    analysis_mode: "incremental" | "fresh";
+    overrideModel: boolean;
+    provider: string;
+    deep_model: string;
+    quick_model: string;
+    debate_rounds: number;
+    risk_rounds: number;
+  }>({
     ticker: "",
     preset: CADENCE_PRESETS[0].label,
     customCron: "",
     notes: "",
-    // Advanced overrides
+    // Default schedules to FRESH because scheduled runs are precisely
+    // the case where decision-anchoring drift compounds — each
+    // incremental run reuses yesterday's PM context, which uses the
+    // day-before's PM context, etc. Forcing fresh on every schedule
+    // breaks that drift while still letting the user override per-run.
+    analysis_mode: "fresh",
     overrideModel: false,
     provider: "anthropic",
     deep_model: "claude-sonnet-4-6",
@@ -63,8 +80,11 @@ export default function SchedulesPage() {
     mutationFn: () => {
       // Only attach per-schedule model overrides if the user explicitly
       // toggled Advanced. Otherwise leave options empty — the worker
-      // uses its own defaults.
-      const options: Record<string, any> = {};
+      // uses its own defaults. Always include analysis_mode so the
+      // scheduled run knows whether to inject memory.
+      const options: Record<string, any> = {
+        analysis_mode: form.analysis_mode,
+      };
       if (form.overrideModel) {
         options.provider = form.provider;
         options.deep_model = form.deep_model;
@@ -186,6 +206,43 @@ export default function SchedulesPage() {
               placeholder="e.g. weekday morning refresh"
               maxLength={200}
             />
+          </div>
+          <div className="md:col-span-3">
+            <label className="label">Memory mode</label>
+            <div className="flex gap-4">
+              <label className="flex items-start gap-2 text-sm cursor-pointer">
+                <input
+                  type="radio"
+                  checked={form.analysis_mode === "fresh"}
+                  onChange={() => setForm({ ...form, analysis_mode: "fresh" })}
+                  className="mt-1"
+                />
+                <span>
+                  <span className="font-semibold">Fresh</span>{" "}
+                  <span className="text-xs text-muted">(recommended for schedules)</span>
+                  <span className="block text-xs text-muted max-w-xl">
+                    No memory injection. Recommended for recurring schedules
+                    so the PM doesn&apos;t anchor on yesterday&apos;s decision
+                    each day.
+                  </span>
+                </span>
+              </label>
+              <label className="flex items-start gap-2 text-sm cursor-pointer">
+                <input
+                  type="radio"
+                  checked={form.analysis_mode === "incremental"}
+                  onChange={() => setForm({ ...form, analysis_mode: "incremental" })}
+                  className="mt-1"
+                />
+                <span>
+                  <span className="font-semibold">Incremental</span>
+                  <span className="block text-xs text-muted max-w-xl">
+                    PM sees prior decisions for this ticker. Faster
+                    convergence but anchors on yesterday.
+                  </span>
+                </span>
+              </label>
+            </div>
           </div>
         </div>
 

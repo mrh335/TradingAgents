@@ -115,6 +115,7 @@ export default function BatchListPage() {
   const [quickModel, setQuickModel] = useState<string>("");
   const [debateRounds, setDebateRounds] = useState(1);
   const [riskRounds, setRiskRounds] = useState(1);
+  const [analysisMode, setAnalysisMode] = useState<"incremental" | "fresh">("incremental");
 
   // Seed form with saved defaults once they load.
   useEffect(() => {
@@ -176,6 +177,7 @@ export default function BatchListPage() {
               risk_rounds: req.max_risk_discuss_rounds,
               data_vendors: req.data_vendors,
               batch_label: batchLabel,
+              analysis_mode: analysisMode,
             },
             requested_by: `web-ui:/batch:${batchLabel}`,
           });
@@ -213,7 +215,10 @@ export default function BatchListPage() {
         fundamental_data: "yfinance",
         news_data: "yfinance",
       },
-    };
+      // Flowed into both the synchronous batch runner and the queue
+      // (the queue's options.analysis_mode is set below in queueAll).
+      analysis_mode: analysisMode,
+    } as BatchCreateRequest;
   }
 
   function submit() {
@@ -293,6 +298,36 @@ export default function BatchListPage() {
         <div>
           <label className="label">Risk rounds</label>
           <input className="input w-full" type="number" min={1} max={5} value={riskRounds} onChange={(e) => setRiskRounds(parseInt(e.target.value) || 1)} />
+        </div>
+
+        <div className="col-span-3">
+          <label className="label">Memory mode</label>
+          <div className="flex gap-4">
+            <label className="flex items-start gap-2 text-sm cursor-pointer">
+              <input
+                type="radio"
+                checked={analysisMode === "incremental"}
+                onChange={() => setAnalysisMode("incremental")}
+                className="mt-1"
+              />
+              <span>
+                <span className="font-semibold">Incremental</span>
+                <span className="block text-xs text-muted">PM sees prior decisions for each ticker.</span>
+              </span>
+            </label>
+            <label className="flex items-start gap-2 text-sm cursor-pointer">
+              <input
+                type="radio"
+                checked={analysisMode === "fresh"}
+                onChange={() => setAnalysisMode("fresh")}
+                className="mt-1"
+              />
+              <span>
+                <span className="font-semibold">Fresh</span>
+                <span className="block text-xs text-muted">No memory injection — break anchoring drift.</span>
+              </span>
+            </label>
+          </div>
         </div>
 
         <div className="col-span-3 flex flex-wrap justify-end items-center gap-3">

@@ -23,6 +23,9 @@ export default function DiscoverPage() {
           quick_model: "claude-haiku-4-5",
           debate_rounds: 1,
           risk_rounds: 1,
+          // Discovery queue items are first-look analyses for tickers the
+          // user doesn't own yet, so memory is irrelevant — use fresh.
+          analysis_mode: "fresh",
         },
         requested_by: "web-ui:/discover",
       }),

@@ -29,6 +29,13 @@ import type {
   WatchlistEntry,
 } from "./types";
 
+// Two ways the analysis can run. "incremental" injects the memory-log
+// past_context into the Portfolio Manager prompt (default, efficient).
+// "fresh" bypasses memory entirely so the PM evaluates the analyst
+// reports without anchoring on prior decisions. See gui/runner_worker.py
+// for the server-side branch.
+export type AnalysisMode = "incremental" | "fresh";
+
 const API_BASE = "/api";
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {

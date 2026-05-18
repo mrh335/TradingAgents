@@ -39,8 +39,10 @@ export default function DashboardPage() {
     },
   });
 
-  // Quick "re-analyze this ticker" via the queue. Default options match
-  // the Run page defaults (anthropic + sonnet/haiku + 1 round each).
+  // Quick "re-analyze this ticker" via the queue. Defaults to FRESH mode
+  // because hitting Re-queue is explicit re-analysis intent — the user
+  // wants a new look, not the PM picking up where yesterday's decision
+  // left off.
   const queue = useMutation({
     mutationFn: (ticker: string) =>
       RunQueue.create({
@@ -53,6 +55,7 @@ export default function DashboardPage() {
           quick_model: "claude-haiku-4-5",
           debate_rounds: 1,
           risk_rounds: 1,
+          analysis_mode: "fresh",
           data_vendors: {
             core_stock_apis: "yfinance",
             technical_indicators: "yfinance",

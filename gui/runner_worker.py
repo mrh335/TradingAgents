@@ -257,7 +257,18 @@ def run(job: Dict[str, Any]) -> None:
     # We replicate ``_run_graph`` here so we can iterate ``graph.stream`` and
     # emit chunk events as nodes complete. The original ``debug=True`` path
     # only pretty-prints to stdout — we want structured events.
-    past_context = ta.memory_log.get_past_context(ticker)
+    #
+    # Memory injection: in 'incremental' mode (the default) we pull the
+    # past_context from the memory log so the Portfolio Manager sees prior
+    # decisions for the same ticker. In 'fresh' mode we deliberately skip
+    # this so the PM evaluates the analyst reports from scratch — useful
+    # for breaking out of decision-anchoring drift periodically.
+    analysis_mode = (job.get("analysis_mode") or "incremental").lower()
+    if analysis_mode == "fresh":
+        past_context = ""
+        emit({"type": "info", "message": "Running in FRESH mode — no prior-run context will be injected."})
+    else:
+        past_context = ta.memory_log.get_past_context(ticker)
     init_state = ta.propagator.create_initial_state(ticker, trade_date, past_context=past_context)
     args = ta.propagator.get_graph_args()
 
