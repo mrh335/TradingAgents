@@ -779,6 +779,117 @@ export const Risk = {
     ),
 };
 
+// ---- Trade journal -----------------------------------------------------
+
+export type TradeAction = "buy" | "sell" | "dividend" | "split" | "transfer" | "short" | "cover";
+
+export type TradeEntry = {
+  id: number;
+  ticker: string;
+  action: TradeAction;
+  shares: number;
+  price: number | null;
+  executed_at: string;
+  account: string | null;
+  notes: string | null;
+  linked_run_id: string | null;
+  fees: number;
+  created_at: string;
+  updated_at: string;
+};
+
+export type TickerPnL = {
+  ticker: string;
+  buys: number;
+  sells: number;
+  shares_acquired: number;
+  shares_disposed: number;
+  capital_in: number;
+  capital_out: number;
+  dividends: number;
+  net_pnl_realized: number;
+  trade_count: number;
+};
+
+export const Trades = {
+  list: (ticker?: string) => {
+    const qs = ticker ? `?ticker=${encodeURIComponent(ticker)}` : "";
+    return request<TradeEntry[]>(`/trades${qs}`);
+  },
+  create: (req: {
+    ticker: string;
+    action: TradeAction;
+    shares: number;
+    price?: number;
+    executed_at: string;
+    account?: string;
+    notes?: string;
+    linked_run_id?: string;
+    fees?: number;
+  }) =>
+    request<TradeEntry>("/trades", { method: "POST", body: JSON.stringify(req) }),
+  update: (
+    id: number,
+    req: Partial<{
+      action: TradeAction;
+      shares: number;
+      price: number;
+      executed_at: string;
+      account: string;
+      notes: string;
+      linked_run_id: string;
+      fees: number;
+    }>,
+  ) =>
+    request<TradeEntry>(`/trades/${id}`, { method: "PUT", body: JSON.stringify(req) }),
+  delete: (id: number) =>
+    request<{ deleted: number }>(`/trades/${id}`, { method: "DELETE" }),
+  summary: () =>
+    request<{ by_ticker: TickerPnL[]; totals: Record<string, number> }>("/trades/summary"),
+};
+
+// ---- News alerts -------------------------------------------------------
+
+export type NewsAlert = {
+  id: number;
+  ticker: string;
+  headline: string;
+  url: string | null;
+  published_at: string | null;
+  source: string | null;
+  impact: "high" | "medium" | "low";
+  impact_score: number;
+  keywords: string | null;
+  status: "unread" | "read" | "dismissed";
+  fetched_at: string;
+};
+
+export const NewsAlerts = {
+  list: (params?: { ticker?: string; status?: string; impact?: string; limit?: number }) => {
+    const qp = new URLSearchParams();
+    if (params?.ticker) qp.set("ticker", params.ticker);
+    if (params?.status) qp.set("status", params.status);
+    if (params?.impact) qp.set("impact", params.impact);
+    if (params?.limit) qp.set("limit", String(params.limit));
+    const qs = qp.toString();
+    return request<NewsAlert[]>(`/news-alerts${qs ? `?${qs}` : ""}`);
+  },
+  unreadCount: () => request<Record<string, number>>("/news-alerts/unread-count"),
+  markRead: (id: number) =>
+    request<{ status: string; id: number }>(`/news-alerts/${id}/mark-read`, { method: "POST" }),
+  dismiss: (id: number) =>
+    request<{ status: string; id: number }>(`/news-alerts/${id}/dismiss`, { method: "POST" }),
+  markAllRead: (ticker?: string) => {
+    const qs = ticker ? `?ticker=${encodeURIComponent(ticker)}` : "";
+    return request<{ marked_read: number; ticker: string | null }>(
+      `/news-alerts/mark-all-read${qs}`,
+      { method: "POST" },
+    );
+  },
+  refresh: () =>
+    request<{ new_alerts: number }>("/news-alerts/refresh", { method: "POST" }),
+};
+
 // ---- Live ticker prices ------------------------------------------------
 
 export type LivePrice = {

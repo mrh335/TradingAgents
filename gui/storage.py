@@ -163,6 +163,49 @@ def init_db() -> None:
             );
             CREATE INDEX IF NOT EXISTS ticker_schedules_enabled ON ticker_schedules(enabled, ticker);
 
+            -- Trade journal: actual executed trades the user logs (or
+            -- imports from the broker). Separate from `positions` which
+            -- tracks current holdings; this table is the history of
+            -- buy/sell/dividend/split/transfer activity over time. Feeds
+            -- the realized-P&L view + future backtest "actual vs notional"
+            -- comparison.
+            CREATE TABLE IF NOT EXISTS trade_journal (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ticker TEXT NOT NULL,
+                action TEXT NOT NULL,           -- buy | sell | dividend | split | transfer | short | cover
+                shares REAL NOT NULL,           -- always positive; action implies sign
+                price REAL,                     -- per-share execution price (NULL for splits)
+                executed_at TEXT NOT NULL,      -- YYYY-MM-DD trade date
+                account TEXT,
+                notes TEXT,
+                linked_run_id TEXT,             -- optional FK to runs.run_id ("traded on this recommendation")
+                fees REAL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS trade_journal_ticker ON trade_journal(ticker, executed_at);
+
+            -- News alerts: scored news items per ticker, surfaced when
+            -- impact is meaningful. Populated by a background poller
+            -- (service/news_alerts_poller.py) that calls yfinance every
+            -- 15 min for watchlist + position tickers.
+            CREATE TABLE IF NOT EXISTS news_alerts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ticker TEXT NOT NULL,
+                headline TEXT NOT NULL,
+                url TEXT,
+                published_at TEXT,              -- ISO timestamp from upstream
+                source TEXT,
+                impact TEXT NOT NULL DEFAULT 'low',   -- high | medium | low
+                impact_score INTEGER NOT NULL DEFAULT 0,
+                keywords TEXT,                   -- comma-separated triggering keywords
+                status TEXT NOT NULL DEFAULT 'unread',  -- unread | read | dismissed
+                fetched_at TEXT NOT NULL,
+                hash TEXT UNIQUE                 -- dedupe key (url or headline+ticker)
+            );
+            CREATE INDEX IF NOT EXISTS news_alerts_ticker ON news_alerts(ticker, published_at DESC);
+            CREATE INDEX IF NOT EXISTS news_alerts_status ON news_alerts(status, impact_score DESC);
+
             -- Run queue: work items deposited by the webapp, consumed by an
             -- external poller (e.g. Claude Desktop / Claude Code running the
             -- tradingagents-analyze skill). Decouples "user wants analysis"
@@ -600,6 +643,190 @@ def runs_in_batch(batch_id: str) -> List[Dict[str, Any]]:
             (batch_id,),
         ).fetchall()
         return [dict(r) for r in rows]
+
+
+# ---------------------------------------------------------------------------
+# Trade journal — actual executed trades
+# ---------------------------------------------------------------------------
+
+ALLOWED_TRADE_ACTIONS = (
+    "buy", "sell", "dividend", "split", "transfer", "short", "cover",
+)
+
+
+def list_trades(*, ticker: Optional[str] = None, limit: int = 1000) -> List[Dict[str, Any]]:
+    sql = "SELECT * FROM trade_journal WHERE 1=1"
+    args: List[Any] = []
+    if ticker:
+        sql += " AND ticker = ?"
+        args.append(ticker.strip().upper())
+    sql += " ORDER BY executed_at DESC, id DESC LIMIT ?"
+    args.append(limit)
+    with _conn() as c:
+        return [dict(r) for r in c.execute(sql, args).fetchall()]
+
+
+def get_trade(trade_id: int) -> Optional[Dict[str, Any]]:
+    with _conn() as c:
+        row = c.execute("SELECT * FROM trade_journal WHERE id=?", (trade_id,)).fetchone()
+        return dict(row) if row else None
+
+
+def add_trade(*, ticker: str, action: str, shares: float,
+              executed_at: str, price: Optional[float] = None,
+              account: Optional[str] = None, notes: Optional[str] = None,
+              linked_run_id: Optional[str] = None,
+              fees: float = 0.0) -> Dict[str, Any]:
+    if action not in ALLOWED_TRADE_ACTIONS:
+        raise ValueError(f"invalid action {action!r}; allowed: {ALLOWED_TRADE_ACTIONS}")
+    now = _now()
+    with _conn() as c:
+        cur = c.execute(
+            """INSERT INTO trade_journal(ticker, action, shares, price,
+                                          executed_at, account, notes,
+                                          linked_run_id, fees,
+                                          created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (ticker.strip().upper(), action, float(shares),
+             float(price) if price is not None else None,
+             executed_at, account, notes, linked_run_id, float(fees), now, now),
+        )
+        row = c.execute(
+            "SELECT * FROM trade_journal WHERE id=?", (cur.lastrowid,)
+        ).fetchone()
+        return dict(row)
+
+
+def update_trade(trade_id: int, *,
+                 action: Optional[str] = None,
+                 shares: Optional[float] = None,
+                 price: Optional[float] = None,
+                 executed_at: Optional[str] = None,
+                 account: Optional[str] = None,
+                 notes: Optional[str] = None,
+                 linked_run_id: Optional[str] = None,
+                 fees: Optional[float] = None) -> Optional[Dict[str, Any]]:
+    fields = []
+    args: List[Any] = []
+    if action is not None:
+        if action not in ALLOWED_TRADE_ACTIONS:
+            raise ValueError(f"invalid action {action!r}")
+        fields.append("action=?"); args.append(action)
+    if shares is not None:
+        fields.append("shares=?"); args.append(float(shares))
+    if price is not None:
+        fields.append("price=?"); args.append(float(price))
+    if executed_at is not None:
+        fields.append("executed_at=?"); args.append(executed_at)
+    if account is not None:
+        fields.append("account=?"); args.append(account)
+    if notes is not None:
+        fields.append("notes=?"); args.append(notes)
+    if linked_run_id is not None:
+        fields.append("linked_run_id=?"); args.append(linked_run_id)
+    if fees is not None:
+        fields.append("fees=?"); args.append(float(fees))
+    if not fields:
+        return get_trade(trade_id)
+    fields.append("updated_at=?"); args.append(_now())
+    args.append(trade_id)
+    with _conn() as c:
+        c.execute(
+            f"UPDATE trade_journal SET {', '.join(fields)} WHERE id=?",
+            args,
+        )
+    return get_trade(trade_id)
+
+
+def delete_trade(trade_id: int) -> bool:
+    with _conn() as c:
+        cur = c.execute("DELETE FROM trade_journal WHERE id=?", (trade_id,))
+        return cur.rowcount > 0
+
+
+# ---------------------------------------------------------------------------
+# News alerts — scored news items, populated by the background poller
+# ---------------------------------------------------------------------------
+
+def list_news_alerts(*, ticker: Optional[str] = None,
+                     status: Optional[str] = None,
+                     impact: Optional[str] = None,
+                     limit: int = 200) -> List[Dict[str, Any]]:
+    sql = "SELECT * FROM news_alerts WHERE 1=1"
+    args: List[Any] = []
+    if ticker:
+        sql += " AND ticker = ?"
+        args.append(ticker.strip().upper())
+    if status:
+        sql += " AND status = ?"
+        args.append(status)
+    if impact:
+        sql += " AND impact = ?"
+        args.append(impact)
+    sql += " ORDER BY impact_score DESC, published_at DESC, id DESC LIMIT ?"
+    args.append(limit)
+    with _conn() as c:
+        return [dict(r) for r in c.execute(sql, args).fetchall()]
+
+
+def add_news_alert(*, ticker: str, headline: str,
+                    url: Optional[str] = None,
+                    published_at: Optional[str] = None,
+                    source: Optional[str] = None,
+                    impact: str = "low",
+                    impact_score: int = 0,
+                    keywords: Optional[str] = None,
+                    hash_key: str) -> Optional[Dict[str, Any]]:
+    """Insert one news alert. On hash collision, returns None (dedupe)."""
+    with _conn() as c:
+        try:
+            cur = c.execute(
+                """INSERT INTO news_alerts(ticker, headline, url, published_at,
+                                            source, impact, impact_score,
+                                            keywords, status, fetched_at, hash)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'unread', ?, ?)""",
+                (ticker.strip().upper(), headline, url, published_at, source,
+                 impact, impact_score, keywords, _now(), hash_key),
+            )
+        except sqlite3.IntegrityError:
+            return None  # duplicate hash
+        row = c.execute(
+            "SELECT * FROM news_alerts WHERE id=?", (cur.lastrowid,)
+        ).fetchone()
+        return dict(row)
+
+
+def update_news_alert_status(alert_id: int, status: str) -> bool:
+    if status not in ("unread", "read", "dismissed"):
+        raise ValueError(f"invalid status {status!r}")
+    with _conn() as c:
+        cur = c.execute(
+            "UPDATE news_alerts SET status=? WHERE id=?", (status, alert_id),
+        )
+        return cur.rowcount > 0
+
+
+def mark_all_news_alerts_read(*, ticker: Optional[str] = None) -> int:
+    sql = "UPDATE news_alerts SET status='read' WHERE status='unread'"
+    args: List[Any] = []
+    if ticker:
+        sql += " AND ticker = ?"
+        args.append(ticker.strip().upper())
+    with _conn() as c:
+        cur = c.execute(sql, args)
+        return cur.rowcount
+
+
+def news_alerts_unread_count() -> Dict[str, int]:
+    """Returns {ticker: count_of_unread_high_or_medium} for the dashboard
+    notification badge."""
+    with _conn() as c:
+        rows = c.execute(
+            """SELECT ticker, COUNT(*) as n FROM news_alerts
+               WHERE status='unread' AND impact IN ('high', 'medium')
+               GROUP BY ticker"""
+        ).fetchall()
+        return {r["ticker"]: r["n"] for r in rows}
 
 
 # ---------------------------------------------------------------------------

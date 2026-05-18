@@ -32,6 +32,7 @@ from service.routers import (
     exports,
     health,
     memory,
+    news_alerts as news_alerts_router,
     news_feed,
     notes,
     planner,
@@ -46,6 +47,7 @@ from service.routers import (
     simulation,
     streaming,
     tokens as tokens_router,
+    trades as trades_router,
     watchlist,
 )
 
@@ -120,6 +122,10 @@ async def _startup() -> None:
     # service.scheduler for the loop.
     from service import scheduler as scheduler_service
     loop.create_task(scheduler_service.run(interval_seconds=60))
+    # News-alerts poller — ticks every 15 min, fetches yfinance news
+    # for watchlist + positions, scores impact, persists new items.
+    from service import news_alerts_poller
+    loop.create_task(news_alerts_poller.run(interval_seconds=900))
     logger.info("TradingAgents API ready. CORS origins: %s", _allowed_origins())
 
 
@@ -157,6 +163,8 @@ app.include_router(discover_router.router)
 app.include_router(schedules_router.router)
 app.include_router(backtest_router.router)
 app.include_router(risk_router.router)
+app.include_router(trades_router.router)
+app.include_router(news_alerts_router.router)
 
 
 def main() -> int:
