@@ -22,7 +22,7 @@ GET    /trades/summary      — realized P&L per ticker
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field, field_validator
@@ -150,7 +150,7 @@ class TickerPnL(BaseModel):
 
 
 @router.get("/summary")
-def trades_summary() -> Dict[str, list]:
+def trades_summary() -> Dict[str, Any]:
     """Realized P&L per ticker, computed from the trade journal alone.
 
     Note: this is *realized* only — open positions' unrealized P&L lives
