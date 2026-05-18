@@ -184,11 +184,24 @@ def _tick() -> int:
 
 
 async def run(interval_seconds: int = 900) -> None:
-    """Run the news-alerts poller loop forever."""
+    """Run the news-alerts poller loop forever.
+
+    Each tick calls yfinance synchronously per ticker (~3-5s per call).
+    With ~10 tickers that's ~30-50s of blocked I/O, which would freeze
+    the FastAPI event loop if we called _tick() directly. So we offload
+    to a worker thread via asyncio.to_thread — other request handlers
+    continue serving while the poll runs.
+
+    Also defer the FIRST tick by 30s after startup so the api becomes
+    responsive before the poller does any work.
+    """
     logger.info("news_alerts_poller started (interval=%ds)", interval_seconds)
+    # Initial delay so the api can finish handling startup traffic
+    # before we block a worker thread for ~30s on yfinance fetches.
+    await asyncio.sleep(30)
     while True:
         try:
-            n = _tick()
+            n = await asyncio.to_thread(_tick)
             if n:
                 logger.info("news_alerts_poller inserted %d new alerts", n)
         except Exception as e:

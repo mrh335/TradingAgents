@@ -90,8 +90,10 @@ def mark_all_read(ticker: Optional[str] = None) -> dict:
 
 
 @router.post("/refresh")
-def refresh() -> dict:
+async def refresh() -> dict:
     """Force one poller tick right now. Useful after adding a new ticker
-    to the watchlist."""
-    n = news_alerts_poller._tick()
+    to the watchlist. Runs the yfinance fetch in a worker thread so the
+    request handler doesn't block — large polls can take 30-60s."""
+    import asyncio
+    n = await asyncio.to_thread(news_alerts_poller._tick)
     return {"new_alerts": n}
