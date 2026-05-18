@@ -356,3 +356,99 @@ def recompute_all(limit: int = Query(500, ge=10, le=2000)) -> dict:
             err += 1
             errors.append(f"{r['run_id']}: {e}")
     return {"computed": ok, "errors": err, "error_details": errors[:10]}
+
+
+# ───────────────────────────────────────────────────────────────────────
+# Per-ticker performance attribution — which tickers actually drove
+# wins/losses in the framework's history?
+# ───────────────────────────────────────────────────────────────────────
+
+class TickerAttributionRow(BaseModel):
+    ticker: str
+    runs: int
+    counted: int                 # runs with horizon reached + non-Hold decision
+    wins: int
+    losses: int
+    hit_rate_pct: Optional[float] = None
+    mean_alpha_pct: Optional[float] = None
+    best_alpha_pct: Optional[float] = None
+    best_run_id: Optional[str] = None
+    worst_alpha_pct: Optional[float] = None
+    worst_run_id: Optional[str] = None
+
+
+class AttributionResponse(BaseModel):
+    window_days: int
+    rows: List[TickerAttributionRow]
+
+
+@router.get("/attribution", response_model=AttributionResponse)
+def attribution(
+    window_days: int = Query(30, ge=5, le=365),
+    limit: int = Query(500, ge=10, le=2000),
+) -> AttributionResponse:
+    """Per-ticker performance attribution rollup.
+
+    For each ticker the framework has been run on, aggregate across all
+    completed runs:
+    - hit rate at the chosen window
+    - mean alpha vs SPY
+    - best + worst single run (by alpha) for click-through
+
+    Sorted by mean alpha descending so the best contributors surface
+    first. Useful for "where is the framework actually making money on
+    my book."
+    """
+    rows = [r for r in storage.list_runs(limit=limit) if (r.get("status") or "").lower() == "done"]
+    results: List[BacktestResult] = []
+    for r in rows:
+        try:
+            results.append(_compute(r, force=False))
+        except Exception as e:
+            logger.warning(f"attribution skipped run {r['run_id']}: {e}")
+
+    by_ticker: Dict[str, List[BacktestResult]] = {}
+    for res in results:
+        by_ticker.setdefault(res.ticker, []).append(res)
+
+    out_rows: List[TickerAttributionRow] = []
+    for ticker, runs in by_ticker.items():
+        counted = 0
+        wins = losses = 0
+        alphas: List[tuple] = []  # (alpha, run_id)
+        for res in runs:
+            w = next((w for w in res.windows if w.days == window_days), None)
+            if w is None or not w.horizon_reached or w.win is None:
+                continue
+            counted += 1
+            if w.win:
+                wins += 1
+            else:
+                losses += 1
+            if w.alpha_pct is not None:
+                alphas.append((w.alpha_pct, res.run_id))
+        hit = (wins / counted * 100) if counted > 0 else None
+        mean_alpha = (sum(a for a, _ in alphas) / len(alphas)) if alphas else None
+        best = max(alphas, default=(None, None))
+        worst = min(alphas, default=(None, None))
+        out_rows.append(TickerAttributionRow(
+            ticker=ticker,
+            runs=len(runs),
+            counted=counted,
+            wins=wins, losses=losses,
+            hit_rate_pct=round(hit, 1) if hit is not None else None,
+            mean_alpha_pct=round(mean_alpha, 2) if mean_alpha is not None else None,
+            best_alpha_pct=round(best[0], 2) if best[0] is not None else None,
+            best_run_id=best[1],
+            worst_alpha_pct=round(worst[0], 2) if worst[0] is not None else None,
+            worst_run_id=worst[1],
+        ))
+
+    # Sort: highest mean alpha first; tickers with no counted runs at the
+    # bottom (sorted by ticker).
+    out_rows.sort(key=lambda r: (
+        r.counted == 0,  # uncounted last
+        -(r.mean_alpha_pct if r.mean_alpha_pct is not None else -9999),
+        r.ticker,
+    ))
+    return AttributionResponse(window_days=window_days, rows=out_rows)

@@ -668,15 +668,84 @@ export type BacktestSummaryResponse = {
   }>;
 };
 
+export type TickerAttributionRow = {
+  ticker: string;
+  runs: number;
+  counted: number;
+  wins: number;
+  losses: number;
+  hit_rate_pct: number | null;
+  mean_alpha_pct: number | null;
+  best_alpha_pct: number | null;
+  best_run_id: string | null;
+  worst_alpha_pct: number | null;
+  worst_run_id: string | null;
+};
+
+export type AttributionResponse = {
+  window_days: number;
+  rows: TickerAttributionRow[];
+};
+
 export const Backtest = {
   summary: (windowDays: number = 30) =>
     request<BacktestSummaryResponse>(`/backtest/?window_days=${windowDays}`),
   get: (runId: string, force = false) =>
     request<BacktestResult>(`/backtest/${runId}${force ? "?force=true" : ""}`),
+  attribution: (windowDays: number = 30) =>
+    request<AttributionResponse>(`/backtest/attribution?window_days=${windowDays}`),
   recomputeAll: () =>
     request<{ computed: number; errors: number; error_details: string[] }>(
       "/backtest/recompute-all",
       { method: "POST" },
+    ),
+};
+
+// ---- Portfolio aggregations (multi-account + correlation) ---------------
+
+export type AccountRollup = {
+  account: string;
+  positions: number;
+  total_cost: number;
+  total_value: number | null;
+  unrealized_pnl: number | null;
+  unrealized_pnl_pct: number | null;
+  tickers: Array<{
+    ticker: string;
+    shares: number;
+    cost: number;
+    value: number | null;
+    cost_basis_per_share: number;
+    live_price: number | null;
+  }>;
+};
+
+export type ByAccountResponse = {
+  accounts: AccountRollup[];
+  totals: {
+    account_count: number;
+    total_cost: number;
+    total_value: number | null;
+  };
+};
+
+export type CorrelationCell = { a: string; b: string; correlation: number };
+export type CorrelationResponse = {
+  tickers: string[];
+  lookback_days: number;
+  matrix: (number | null)[][];
+  pairs_high_correlation: CorrelationCell[];
+  note: string | null;
+};
+
+// Extend the existing Portfolio object below — we already declared it
+// earlier; add the new methods by re-exporting through a separate
+// PortfolioAnalytics object so we don't conflict.
+export const PortfolioAnalytics = {
+  byAccount: () => request<ByAccountResponse>("/portfolio/by-account"),
+  correlation: (lookbackDays: number = 90, includeBenchmark = true) =>
+    request<CorrelationResponse>(
+      `/portfolio/correlation?lookback_days=${lookbackDays}&include_benchmark=${includeBenchmark}`,
     ),
 };
 

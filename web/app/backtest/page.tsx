@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Backtest, type HitRateCell } from "@/lib/api";
+import { Backtest, type HitRateCell, type TickerAttributionRow } from "@/lib/api";
 import { decisionColor } from "@/lib/format";
 
 const WINDOWS = [
@@ -147,6 +147,9 @@ export default function BacktestPage() {
         </section>
       )}
 
+      {/* Per-ticker attribution */}
+      <AttributionSection windowDays={windowDays} />
+
       {/* Per-run sample */}
       <section>
         <h2 className="text-lg font-semibold mb-3">Recent runs scored</h2>
@@ -234,6 +237,76 @@ function ScoreboardCell({
       <div className={`text-2xl font-bold tabular-nums ${tone ?? ""}`}>{value}</div>
       {sub && <div className="text-xs text-muted mt-0.5">{sub}</div>}
     </div>
+  );
+}
+
+function AttributionSection({ windowDays }: { windowDays: number }) {
+  const q = useQuery({
+    queryKey: ["backtest-attribution", windowDays],
+    queryFn: () => Backtest.attribution(windowDays),
+    refetchOnWindowFocus: false,
+  });
+  if (q.isLoading) return null;
+  if (!q.data) return null;
+  const rows = q.data.rows.filter((r) => r.counted > 0);
+  if (rows.length === 0) return null;
+  return (
+    <section>
+      <h2 className="text-lg font-semibold mb-3">By ticker (performance attribution)</h2>
+      <div className="card overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead className="text-left text-xs uppercase tracking-wider text-muted">
+            <tr>
+              <th className="py-2">Ticker</th>
+              <th className="text-right">Runs</th>
+              <th className="text-right">Counted</th>
+              <th className="text-right">Wins</th>
+              <th className="text-right">Losses</th>
+              <th className="text-right">Hit rate</th>
+              <th className="text-right">Mean alpha</th>
+              <th className="text-right">Best alpha</th>
+              <th className="text-right">Worst alpha</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r) => (
+              <tr key={r.ticker} className="border-t border-border">
+                <td className="py-2 font-semibold">{r.ticker}</td>
+                <td className="text-right tabular-nums">{r.runs}</td>
+                <td className="text-right tabular-nums">{r.counted}</td>
+                <td className="text-right tabular-nums text-success">{r.wins}</td>
+                <td className="text-right tabular-nums text-danger">{r.losses}</td>
+                <td className={`text-right tabular-nums font-semibold ${hitToneClass(r.hit_rate_pct)}`}>
+                  {r.hit_rate_pct !== null ? `${r.hit_rate_pct}%` : "—"}
+                </td>
+                <td className={`text-right tabular-nums ${(r.mean_alpha_pct ?? 0) > 0 ? "text-success" : (r.mean_alpha_pct ?? 0) < 0 ? "text-danger" : "text-muted"}`}>
+                  {fmtPct(r.mean_alpha_pct)}
+                </td>
+                <td className="text-right tabular-nums">
+                  {r.best_run_id ? (
+                    <Link href={`/history/${r.best_run_id}`} className="text-success hover:underline">
+                      {fmtPct(r.best_alpha_pct)}
+                    </Link>
+                  ) : <span className="text-muted">—</span>}
+                </td>
+                <td className="text-right tabular-nums">
+                  {r.worst_run_id ? (
+                    <Link href={`/history/${r.worst_run_id}`} className="text-danger hover:underline">
+                      {fmtPct(r.worst_alpha_pct)}
+                    </Link>
+                  ) : <span className="text-muted">—</span>}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <p className="text-xs text-muted mt-2">
+        Best/worst alpha cells link to the individual run with that
+        outcome — useful for inspecting what the framework got right or
+        wrong on a specific ticker.
+      </p>
+    </section>
   );
 }
 
