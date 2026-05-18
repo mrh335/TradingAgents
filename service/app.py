@@ -21,6 +21,7 @@ from gui import storage
 from service.runner_pool import pool
 from service.streaming import broadcaster
 from service.routers import (
+    backtest as backtest_router,
     batches,
     briefs,
     calendar as calendar_router,
