@@ -26,7 +26,7 @@ from gui import storage
 
 router = APIRouter(prefix="/restrictions", tags=["restrictions"])
 
-ALLOWED_KINDS = {"blackout", "restricted_list", "regulatory", "other"}
+ALLOWED_KINDS = {"blackout", "restricted_list", "regulatory", "other", "earnings_blackout"}
 
 
 def _validate_iso_date(v: Optional[str]) -> Optional[str]:
@@ -46,13 +46,27 @@ class Restriction(BaseModel):
     end_date: Optional[str] = None
     kind: str
     reason: Optional[str] = None
+    earnings_days_before: Optional[int] = None
+    earnings_days_after: Optional[int] = None
     created_at: str
     updated_at: str
+    # When the active_on filter is set and the row is an earnings-relative
+    # restriction, these surface the resolved window so the UI can show
+    # "active because earnings is on 2026-05-30, blackout opens 2026-05-16".
+    resolved_start: Optional[str] = None
+    resolved_end: Optional[str] = None
+    resolved_earnings_date: Optional[str] = None
 
 
 class RestrictionCreateRequest(BaseModel):
     ticker: str = Field(min_length=1, max_length=32)
-    start_date: str = Field(description="YYYY-MM-DD inclusive")
+    start_date: str = Field(
+        default="",
+        description=(
+            "YYYY-MM-DD inclusive. Required for fixed-window restrictions; "
+            "ignored when earnings_days_before / earnings_days_after are set."
+        ),
+    )
     end_date: Optional[str] = Field(
         default=None,
         description="YYYY-MM-DD inclusive; omit for an open-ended (indefinite) restriction",
@@ -62,6 +76,25 @@ class RestrictionCreateRequest(BaseModel):
         default=None,
         max_length=500,
         description="Free-form explanation surfaced to the agent",
+    )
+    earnings_days_before: Optional[int] = Field(
+        default=None,
+        ge=0, le=120,
+        description=(
+            "Days BEFORE the ticker's next earnings date to block trading. "
+            "If set along with earnings_days_after, this becomes an "
+            "earnings-relative restriction that auto-recomputes every "
+            "earnings cycle. Typical: 14 (two-week pre-earnings blackout)."
+        ),
+    )
+    earnings_days_after: Optional[int] = Field(
+        default=None,
+        ge=0, le=30,
+        description=(
+            "Days AFTER the ticker's next earnings date to keep blocking "
+            "(typically 1-2 days to let the post-print volatility settle "
+            "before re-opening the trading window)."
+        ),
     )
 
     @field_validator("start_date")
@@ -89,6 +122,8 @@ class RestrictionUpdateRequest(BaseModel):
     end_date: Optional[str] = None
     kind: Optional[str] = None
     reason: Optional[str] = None
+    earnings_days_before: Optional[int] = None
+    earnings_days_after: Optional[int] = None
 
     @field_validator("start_date", "end_date")
     @classmethod
@@ -109,12 +144,17 @@ def _row(d: dict) -> Restriction:
     return Restriction(
         id=d["id"],
         ticker=d["ticker"],
-        start_date=d["start_date"],
+        start_date=d.get("start_date") or "",
         end_date=d.get("end_date"),
         kind=d.get("kind") or "blackout",
         reason=d.get("reason"),
+        earnings_days_before=d.get("earnings_days_before"),
+        earnings_days_after=d.get("earnings_days_after"),
         created_at=d["created_at"],
         updated_at=d["updated_at"],
+        resolved_start=d.get("_resolved_start"),
+        resolved_end=d.get("_resolved_end"),
+        resolved_earnings_date=d.get("_resolved_earnings_date"),
     )
 
 
@@ -144,12 +184,28 @@ def list_restrictions_endpoint(
 
 @router.post("", response_model=Restriction)
 def create_restriction_endpoint(req: RestrictionCreateRequest) -> Restriction:
+    # For earnings-relative restrictions, allow start_date to be empty —
+    # the dynamic window doesn't need a hard start. Store today as a
+    # placeholder so the NOT NULL constraint passes.
+    is_earnings = (
+        req.kind == "earnings_blackout"
+        or req.earnings_days_before is not None
+        or req.earnings_days_after is not None
+    )
+    start_date = req.start_date or (date.today().isoformat() if is_earnings else "")
+    if not start_date:
+        raise HTTPException(
+            status_code=400,
+            detail="start_date is required for fixed-window restrictions",
+        )
     row = storage.add_restriction(
         ticker=req.ticker,
-        start_date=req.start_date,
+        start_date=start_date,
         end_date=req.end_date,
         kind=req.kind,
         reason=req.reason,
+        earnings_days_before=req.earnings_days_before,
+        earnings_days_after=req.earnings_days_after,
     )
     return _row(row)
 
@@ -167,6 +223,8 @@ def update_restriction_endpoint(
         end_date=req.end_date,
         kind=req.kind,
         reason=req.reason,
+        earnings_days_before=req.earnings_days_before,
+        earnings_days_after=req.earnings_days_after,
     )
     return _row(row)
 

@@ -47,7 +47,26 @@ router = APIRouter(prefix="/run-queue", tags=["run-queue"])
 # Schemas
 # ---------------------------------------------------------------------------
 
-ALLOWED_MODES = {"analyze", "brief", "refresh"}
+ALLOWED_MODES = {
+    # Full multi-agent analysis (Phase 0 → Phase 10 of tradingagents-analyze)
+    "analyze",
+    # Brief regeneration only — reuses an existing run's analysis
+    "brief",
+    # Incremental refresh — analyze with analysis_mode=incremental forced
+    "refresh",
+    # News pulse — pull latest news + sentiment for a ticker, post a sidecar
+    "news_fetch",
+    # Deep dive — assemble a long-form research memo on a ticker (uses
+    # multiple analyst tools without running the full debate)
+    "deep_dive",
+    # Earnings recap — summarise the most recent earnings call + reaction
+    "earnings_recap",
+    # Screener query — run a custom screen against the universe
+    "screener_query",
+    # Portfolio review — periodic across-book health check (synthesizes
+    # current holdings + briefs + restrictions)
+    "portfolio_review",
+}
 
 
 class QueueItem(BaseModel):

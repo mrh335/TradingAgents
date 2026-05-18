@@ -21,6 +21,7 @@ const NAV = [
   { href: "/restrictions", label: "Restrictions" },
   { href: "/run", label: "Run" },
   { href: "/batch", label: "Batch" },
+  { href: "/tools", label: "Tools" },
   { href: "/queue", label: "Queue" },
   { href: "/schedules", label: "Schedules" },
   { href: "/history", label: "History" },

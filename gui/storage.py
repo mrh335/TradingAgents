@@ -195,6 +195,19 @@ def init_db() -> None:
             pass
         c.execute("CREATE INDEX IF NOT EXISTS runs_batch ON runs(batch_id)")
 
+        # Lazy column adds for earnings-window restrictions (Batch 3).
+        # Empty (NULL) means "use start_date/end_date the old way";
+        # populated means "this is an earnings-relative restriction —
+        # compute the window dynamically from the ticker's next earnings".
+        for stmt in (
+            "ALTER TABLE trading_restrictions ADD COLUMN earnings_days_before INTEGER",
+            "ALTER TABLE trading_restrictions ADD COLUMN earnings_days_after INTEGER",
+        ):
+            try:
+                c.execute(stmt)
+            except Exception:
+                pass
+
 
 @contextmanager
 def _conn() -> Iterator[sqlite3.Connection]:
@@ -698,35 +711,141 @@ def list_restrictions(*, ticker: Optional[str] = None,
     """List restrictions, optionally filtered.
 
     ``ticker``: case-insensitive match.
-    ``active_on``: YYYY-MM-DD — only return restrictions whose [start_date,
-    end_date] window contains this date (open-ended end_date counts as
-    "indefinitely active").
+    ``active_on``: YYYY-MM-DD — only return restrictions active on this
+    date. Two restriction shapes are supported:
+    - Fixed-window (legacy): active if start_date <= active_on <= end_date
+      (open-ended end_date treated as indefinitely active).
+    - Earnings-window: ``earnings_days_before`` + ``earnings_days_after``
+      define a blackout window relative to the ticker's NEXT earnings
+      date. Active if next_earnings_date − days_before <= active_on <=
+      next_earnings_date + days_after.
+
+    The earnings-window resolution happens in Python (not SQL) because it
+    requires a per-ticker yfinance lookup. Cached for 15 minutes per
+    ticker to avoid hammering the upstream.
     """
     sql = "SELECT * FROM trading_restrictions WHERE 1=1"
     args: List[Any] = []
     if ticker:
         sql += " AND ticker = ?"
         args.append(ticker.strip().upper())
-    if active_on:
-        sql += " AND start_date <= ? AND (end_date IS NULL OR end_date >= ?)"
-        args.extend([active_on, active_on])
     sql += " ORDER BY ticker, start_date DESC"
     with _conn() as c:
-        rows = c.execute(sql, args).fetchall()
-        return [dict(r) for r in rows]
+        rows = [dict(r) for r in c.execute(sql, args).fetchall()]
+
+    if not active_on:
+        return rows
+
+    # Filter to active-on-date. Apply the two evaluation rules.
+    from datetime import date as _date, datetime as _dt, timedelta as _td
+    try:
+        ao = _dt.fromisoformat(active_on).date()
+    except ValueError:
+        return rows
+
+    out: List[Dict[str, Any]] = []
+    for r in rows:
+        edb = r.get("earnings_days_before")
+        eda = r.get("earnings_days_after")
+        if edb is not None or eda is not None:
+            # Earnings-relative restriction. Resolve next earnings date.
+            try:
+                ne = _next_earnings_date(r["ticker"])
+            except Exception:
+                ne = None
+            if ne is None:
+                continue
+            days_before = int(edb or 0)
+            days_after = int(eda or 0)
+            window_start = ne - _td(days=days_before)
+            window_end = ne + _td(days=days_after)
+            if window_start <= ao <= window_end:
+                # Annotate with the resolved window so callers can show it
+                annotated = {**r, "_resolved_start": window_start.isoformat(),
+                             "_resolved_end": window_end.isoformat(),
+                             "_resolved_earnings_date": ne.isoformat()}
+                out.append(annotated)
+        else:
+            # Fixed-window restriction.
+            start = r.get("start_date")
+            end = r.get("end_date")
+            if not start:
+                continue
+            try:
+                sd = _dt.fromisoformat(start).date()
+            except ValueError:
+                continue
+            if sd > ao:
+                continue
+            if end:
+                try:
+                    ed = _dt.fromisoformat(end).date()
+                    if ed < ao:
+                        continue
+                except ValueError:
+                    pass
+            out.append(r)
+    return out
+
+
+# Earnings date cache: ticker → (date, fetched_at). 15-minute TTL.
+_EARNINGS_DATE_CACHE: Dict[str, tuple] = {}
+_EARNINGS_CACHE_TTL_SEC = 900
+
+
+def _next_earnings_date(ticker: str):
+    """Resolve the next earnings date for a ticker via yfinance, with a
+    15-min in-memory cache to avoid hammering the upstream.
+
+    Returns a ``date`` or ``None`` if not available.
+    """
+    from datetime import date as _date, datetime as _dt
+    import time
+    t = (ticker or "").upper()
+    now_ts = time.time()
+    cached = _EARNINGS_DATE_CACHE.get(t)
+    if cached and (now_ts - cached[1] < _EARNINGS_CACHE_TTL_SEC):
+        return cached[0]
+    try:
+        import yfinance as yf
+        cal = yf.Ticker(t).calendar
+        if isinstance(cal, dict):
+            ed = cal.get("Earnings Date") or cal.get("earningsDate")
+            if isinstance(ed, list) and ed:
+                ed = ed[0]
+            if hasattr(ed, "date"):
+                resolved = ed.date()
+            elif isinstance(ed, str):
+                resolved = _dt.fromisoformat(ed[:10]).date()
+            else:
+                resolved = None
+        else:
+            resolved = None
+        _EARNINGS_DATE_CACHE[t] = (resolved, now_ts)
+        return resolved
+    except Exception:
+        _EARNINGS_DATE_CACHE[t] = (None, now_ts)
+        return None
 
 
 def add_restriction(*, ticker: str, start_date: str,
                      end_date: Optional[str] = None,
                      kind: str = "blackout",
-                     reason: Optional[str] = None) -> Dict[str, Any]:
+                     reason: Optional[str] = None,
+                     earnings_days_before: Optional[int] = None,
+                     earnings_days_after: Optional[int] = None,
+                     ) -> Dict[str, Any]:
     now = _now()
     with _conn() as c:
         cur = c.execute(
             """INSERT INTO trading_restrictions(ticker, start_date, end_date,
-                                                kind, reason, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?)""",
-            (ticker.strip().upper(), start_date, end_date, kind, reason, now, now),
+                                                kind, reason,
+                                                earnings_days_before,
+                                                earnings_days_after,
+                                                created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (ticker.strip().upper(), start_date, end_date, kind, reason,
+             earnings_days_before, earnings_days_after, now, now),
         )
         row = c.execute(
             "SELECT * FROM trading_restrictions WHERE id=?", (cur.lastrowid,)
@@ -738,7 +857,10 @@ def update_restriction(restriction_id: int, *,
                         start_date: Optional[str] = None,
                         end_date: Optional[str] = None,
                         kind: Optional[str] = None,
-                        reason: Optional[str] = None) -> Optional[Dict[str, Any]]:
+                        reason: Optional[str] = None,
+                        earnings_days_before: Optional[int] = None,
+                        earnings_days_after: Optional[int] = None,
+                        ) -> Optional[Dict[str, Any]]:
     fields = []
     args: List[Any] = []
     if start_date is not None:
@@ -749,6 +871,10 @@ def update_restriction(restriction_id: int, *,
         fields.append("kind=?"); args.append(kind)
     if reason is not None:
         fields.append("reason=?"); args.append(reason)
+    if earnings_days_before is not None:
+        fields.append("earnings_days_before=?"); args.append(earnings_days_before)
+    if earnings_days_after is not None:
+        fields.append("earnings_days_after=?"); args.append(earnings_days_after)
     if not fields:
         return get_restriction(restriction_id)
     fields.append("updated_at=?"); args.append(_now())

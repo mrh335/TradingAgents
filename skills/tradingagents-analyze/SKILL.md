@@ -462,7 +462,25 @@ the webapp's pay-per-call API key.
    Do NOT poll in a tight loop — wait at least 60s before re-checking,
    or use `/loop` with `delaySeconds=900` (15 min) for unattended mode.
 
-3. **For each claimed item**, extract the parameters from `options`:
+3. **Dispatch on `mode`** — the queue now supports multiple tool types,
+   not just full analysis. Each mode produces a different artifact:
+
+   | Mode | What to do | Artifact |
+   |---|---|---|
+   | `analyze` | Standard full pipeline (Phase 0 → Phase 10) | Run archive + brief |
+   | `refresh` | Same as analyze but force `analysis_mode=incremental` | Run archive + brief |
+   | `brief` | Skip the pipeline — read the latest run's archive for this ticker, regenerate the brief only via the `tradingagents-briefs` skill workflow | brief.json sidecar |
+   | `news_fetch` | Pull last-7-days news + sentiment for the ticker. Format as a markdown report. POST as a `*.news.md` sidecar via `/sidecars/run/{latest_run_id}/sidecar/markdown` (kind=`news.md`) | news.md sidecar |
+   | `deep_dive` | Long-form research memo (~1,500 words). Use fundamentals + news + insider + analyst tools but skip the bull/bear debate. POST as `*.deep_dive.md` sidecar | deep_dive.md sidecar |
+   | `earnings_recap` | Summarise last earnings call + post-print reaction. POST as `*.earnings_recap.md` | earnings_recap.md sidecar |
+   | `portfolio_review` | Cross-book health check using `/portfolio/positions` + `/dashboard/recommendations` + `/risk/portfolio`. No ticker — produces a portfolio-level memo | Standalone portfolio_review.md (use POST /sidecars route with a portfolio-anchor) |
+   | `screener_query` | Run the user's screener filters. Return ranked candidates. POST as a screener_result.md sidecar | screener_result.md |
+
+   When `options.custom_instructions` is present in the queue item,
+   honor those as additional directives on top of the mode's defaults.
+
+4. **For `analyze` / `refresh` modes**, extract the analysis parameters
+   from `options`:
    ```
    {
      "provider": "anthropic",
@@ -474,7 +492,6 @@ the webapp's pay-per-call API key.
      "analysis_mode": "fresh"   // or "incremental"
    }
    ```
-   These came from the Run-page form / Schedules / one-click re-queue.
    Run the **standard single-ticker flow** (Phase 0 → Phase 10) honoring
    these as overrides. Two important behaviors:
 
