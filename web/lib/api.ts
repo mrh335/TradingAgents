@@ -525,6 +525,84 @@ export const Dashboard = {
     const qs = qp.toString();
     return request<FreshnessRow[]>(`/dashboard/freshness${qs ? `?${qs}` : ""}`);
   },
+  recommendations: () => request<RecommendationsResponse>("/dashboard/recommendations"),
+};
+
+// ---- Recommendations (portfolio-level action sheet) --------------------
+
+export type PositionAction = {
+  ticker: string;
+  shares: number;
+  cost_basis: number;
+  cost_basis_total: number;
+  sector: string;
+  weight_pct: number;
+  latest_decision: string | null;
+  latest_action_plain: string | null;
+  latest_tldr: string | null;
+  latest_run_id: string | null;
+  days_since: number | null;
+  restriction_active: boolean;
+  restriction_reason: string | null;
+  action: "maintain" | "trim" | "add" | "exit" | "refresh" | "blocked";
+  priority: "high" | "medium" | "low" | "info";
+  rationale: string;
+};
+
+export type PortfolioObservation = {
+  kind: string;
+  priority: string;
+  summary: string;
+  detail: string | null;
+};
+
+export type RecommendationsResponse = {
+  generated_at: string;
+  portfolio_summary: {
+    position_count: number;
+    total_value_at_basis: number;
+    high_priority_actions: number;
+    blocked_tickers: number;
+  };
+  positions: PositionAction[];
+  sector_mix: Record<string, number>;
+  observations: PortfolioObservation[];
+  action_priority: Array<{ priority: string; ticker: string; verb: string; summary: string }>;
+};
+
+// ---- Discovery (sector gaps + peers + screener) ------------------------
+
+export type SectorGapRow = {
+  sector: string;
+  portfolio_pct: number;
+  benchmark_pct: number;
+  gap_pct: number;
+  underweight: boolean;
+  suggested_tickers: Array<{ ticker: string; rationale: string }>;
+};
+
+export type SectorGapsResponse = {
+  portfolio_total_basis: number;
+  sector_rows: SectorGapRow[];
+  biggest_underweights: string[];
+};
+
+export type PeerSuggestion = {
+  base_ticker: string;
+  base_sector: string;
+  peers: Array<{ ticker: string; rationale: string }>;
+};
+
+export const Discover = {
+  sectorGaps: () => request<SectorGapsResponse>("/discover/sector-gaps"),
+  peers: (ticker?: string) => {
+    const qs = ticker ? `?ticker=${encodeURIComponent(ticker)}` : "";
+    return request<{ suggestions: PeerSuggestion[] }>(`/discover/peers${qs}`);
+  },
+  screener: () =>
+    request<{ status: string; message: string; available_filters: string[] }>(
+      "/discover/screener",
+    ),
 };
 
 // ---- Schedules (per-ticker auto-run scheduler) -------------------------

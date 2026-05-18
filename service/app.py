@@ -27,6 +27,7 @@ from service.routers import (
     charts as charts_router,
     chat,
     dashboard as dashboard_router,
+    discover as discover_router,
     exports,
     health,
     memory,
@@ -137,6 +138,7 @@ app.include_router(run_queue_router.router)
 app.include_router(restrictions_router.router)
 app.include_router(tokens_router.router)
 app.include_router(dashboard_router.router)
+app.include_router(discover_router.router)
 app.include_router(schedules_router.router)
 
 

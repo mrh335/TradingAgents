@@ -22,6 +22,10 @@ services:
       - .env
     environment:
       - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:3000,http://192.168.2.34:3000,http://192.168.2.34}
+      # Local time for the per-ticker scheduler (service/scheduler.py).
+      # croniter evaluates cron expressions in container time, so this
+      # makes "0 6 * * 1-5" mean 6 AM Pacific instead of 6 AM UTC.
+      - TZ=America/Los_Angeles
     ports:
       - "${TRADINGAGENTS_API_PORT:-8000}:8000"
     volumes:
