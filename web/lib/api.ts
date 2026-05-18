@@ -749,6 +749,51 @@ export const PortfolioAnalytics = {
     ),
 };
 
+// ---- Risk metrics (VaR / max drawdown / Sharpe) ------------------------
+
+export type PositionRisk = {
+  ticker: string;
+  weight_pct: number;
+  annualized_volatility_pct: number | null;
+  annualized_return_pct: number | null;
+  sharpe: number | null;
+  max_drawdown_pct: number | null;
+  var_5pct_daily: number | null;
+  var_5pct_dollar: number | null;
+};
+
+export type PortfolioRiskResponse = {
+  lookback_days: number;
+  benchmark: string;
+  portfolio: PositionRisk;
+  benchmark_risk: PositionRisk;
+  positions: PositionRisk[];
+  correlation_avg: number | null;
+  note: string | null;
+};
+
+export const Risk = {
+  portfolio: (lookbackDays: number = 365, benchmark: string = "SPY") =>
+    request<PortfolioRiskResponse>(
+      `/risk/portfolio?lookback_days=${lookbackDays}&benchmark=${benchmark}`,
+    ),
+};
+
+// ---- Live ticker prices ------------------------------------------------
+
+export type LivePrice = {
+  ticker: string;
+  price: number;
+  change: number | null;
+  change_pct: number | null;
+  volume: number | null;
+  polled_at: number | null;
+};
+
+export const Streaming = {
+  state: () => request<{ prices: Record<string, LivePrice> }>("/streaming/state"),
+};
+
 // ---- Schedules (per-ticker auto-run scheduler) -------------------------
 
 export type Schedule = {

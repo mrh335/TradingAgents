@@ -3,7 +3,7 @@
 import { useState } from "react";
 import Link from "next/link";
 import { useQuery } from "@tanstack/react-query";
-import { PortfolioAnalytics, type AccountRollup, type CorrelationCell } from "@/lib/api";
+import { PortfolioAnalytics, Risk, type AccountRollup, type CorrelationCell, type PositionRisk } from "@/lib/api";
 
 function fmtUsd(n: number | null): string {
   if (n === null || n === undefined) return "—";
@@ -112,6 +112,9 @@ export default function PortfolioAnalyticsPage() {
         )}
       </section>
 
+      {/* ─── Risk metrics ─── */}
+      <RiskSection />
+
       {/* ─── Correlation matrix ─── */}
       <section>
         <h2 className="text-lg font-semibold mb-3">Correlation matrix</h2>
@@ -157,6 +160,164 @@ export default function PortfolioAnalyticsPage() {
       </section>
     </div>
   );
+}
+
+function RiskSection() {
+  const [lookbackDays, setLookbackDays] = useState(365);
+  const q = useQuery({
+    queryKey: ["portfolio-risk", lookbackDays],
+    queryFn: () => Risk.portfolio(lookbackDays, "SPY"),
+    refetchOnWindowFocus: false,
+  });
+
+  return (
+    <section>
+      <h2 className="text-lg font-semibold mb-3">Risk metrics</h2>
+      <div className="card flex flex-wrap gap-2 items-center mb-3">
+        <span className="text-sm text-muted">Lookback:</span>
+        {[90, 180, 365, 730].map((d) => (
+          <button
+            key={d}
+            onClick={() => setLookbackDays(d)}
+            className={`btn text-xs ${lookbackDays === d ? "btn-primary" : ""}`}
+          >
+            {d === 90 ? "3mo" : d === 180 ? "6mo" : d === 365 ? "1y" : "2y"}
+          </button>
+        ))}
+      </div>
+      {q.isLoading ? (
+        <div className="text-muted text-sm">Fetching daily returns…</div>
+      ) : !q.data ? (
+        <div className="text-danger text-sm">No data</div>
+      ) : q.data.note ? (
+        <div className="card text-sm text-muted">{q.data.note}</div>
+      ) : (
+        <>
+          {/* Book vs SPY scoreboard */}
+          <div className="card grid grid-cols-2 md:grid-cols-5 gap-3 mb-3">
+            <RiskMetricCell
+              label="Sharpe (book)"
+              value={q.data.portfolio.sharpe?.toFixed(2) ?? "—"}
+              tone={
+                (q.data.portfolio.sharpe ?? 0) > 1
+                  ? "text-success"
+                  : (q.data.portfolio.sharpe ?? 0) < 0
+                    ? "text-danger"
+                    : "text-fg"
+              }
+              sub={`SPY: ${q.data.benchmark_risk.sharpe?.toFixed(2) ?? "—"}`}
+            />
+            <RiskMetricCell
+              label="Volatility (annualized)"
+              value={fmtPctPos(q.data.portfolio.annualized_volatility_pct)}
+              sub={`SPY: ${fmtPctPos(q.data.benchmark_risk.annualized_volatility_pct)}`}
+            />
+            <RiskMetricCell
+              label="Annualized return"
+              value={fmtPctSigned(q.data.portfolio.annualized_return_pct)}
+              tone={
+                (q.data.portfolio.annualized_return_pct ?? 0) > 0
+                  ? "text-success"
+                  : "text-danger"
+              }
+              sub={`SPY: ${fmtPctSigned(q.data.benchmark_risk.annualized_return_pct)}`}
+            />
+            <RiskMetricCell
+              label="Max drawdown"
+              value={fmtPctSigned(q.data.portfolio.max_drawdown_pct)}
+              tone="text-danger"
+              sub={`SPY: ${fmtPctSigned(q.data.benchmark_risk.max_drawdown_pct)}`}
+            />
+            <RiskMetricCell
+              label="Daily VaR (5%)"
+              value={fmtPctSigned(q.data.portfolio.var_5pct_daily)}
+              tone="text-danger"
+              sub={
+                q.data.portfolio.var_5pct_dollar
+                  ? `≈ ${fmtUsd(q.data.portfolio.var_5pct_dollar)} on book`
+                  : ""
+              }
+            />
+          </div>
+          {q.data.correlation_avg !== null && (
+            <div className="card text-xs text-muted mb-3">
+              <strong>Avg pairwise correlation:</strong>{" "}
+              <span className={
+                q.data.correlation_avg > 0.7 ? "text-warning font-semibold" :
+                q.data.correlation_avg > 0.5 ? "text-fg" : "text-success"
+              }>
+                {q.data.correlation_avg.toFixed(3)}
+              </span>{" "}
+              {q.data.correlation_avg > 0.7
+                ? " — book moves like one bet; consider diversifying."
+                : q.data.correlation_avg > 0.5
+                  ? " — moderately correlated."
+                  : " — low correlation = good diversification."}
+            </div>
+          )}
+          {/* Per-position table */}
+          <div className="card overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead className="text-left text-xs uppercase tracking-wider text-muted">
+                <tr>
+                  <th className="py-2">Ticker</th>
+                  <th className="text-right">Weight</th>
+                  <th className="text-right">Volatility</th>
+                  <th className="text-right">Annualized return</th>
+                  <th className="text-right">Sharpe</th>
+                  <th className="text-right">Max drawdown</th>
+                  <th className="text-right">Daily VaR (5%)</th>
+                </tr>
+              </thead>
+              <tbody>
+                {q.data.positions.map((p) => (
+                  <PositionRiskRow key={p.ticker} p={p} />
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
+    </section>
+  );
+}
+
+function PositionRiskRow({ p }: { p: PositionRisk }) {
+  return (
+    <tr className="border-t border-border">
+      <td className="py-2 font-semibold">{p.ticker}</td>
+      <td className="text-right tabular-nums">{p.weight_pct.toFixed(1)}%</td>
+      <td className="text-right tabular-nums">{fmtPctPos(p.annualized_volatility_pct)}</td>
+      <td className={`text-right tabular-nums ${(p.annualized_return_pct ?? 0) > 0 ? "text-success" : "text-danger"}`}>
+        {fmtPctSigned(p.annualized_return_pct)}
+      </td>
+      <td className={`text-right tabular-nums ${(p.sharpe ?? 0) > 1 ? "text-success" : (p.sharpe ?? 0) < 0 ? "text-danger" : ""}`}>
+        {p.sharpe?.toFixed(2) ?? "—"}
+      </td>
+      <td className="text-right tabular-nums text-danger">{fmtPctSigned(p.max_drawdown_pct)}</td>
+      <td className="text-right tabular-nums text-danger">{fmtPctSigned(p.var_5pct_daily)}</td>
+    </tr>
+  );
+}
+
+function RiskMetricCell({ label, value, sub, tone }: { label: string; value: string; sub?: string; tone?: string }) {
+  return (
+    <div>
+      <div className="text-xs uppercase tracking-wider text-muted">{label}</div>
+      <div className={`text-xl font-bold tabular-nums ${tone ?? ""}`}>{value}</div>
+      {sub && <div className="text-[10px] text-muted mt-0.5">{sub}</div>}
+    </div>
+  );
+}
+
+function fmtPctPos(n: number | null): string {
+  if (n === null || n === undefined) return "—";
+  return `${n.toFixed(1)}%`;
+}
+function fmtPctSigned(n: number | null): string {
+  if (n === null || n === undefined) return "—";
+  const sign = n > 0 ? "+" : "";
+  return `${sign}${n.toFixed(2)}%`;
 }
 
 function SummaryCell({

@@ -37,6 +37,7 @@ from service.routers import (
     planner,
     portfolio,
     restrictions as restrictions_router,
+    risk as risk_router,
     run_queue as run_queue_router,
     runs,
     schedules as schedules_router,
@@ -94,11 +95,24 @@ async def _startup() -> None:
     loop = asyncio.get_running_loop()
     pool.attach_loop(loop)
     broadcaster.start(loop)
-    # Pre-warm the broadcaster with watchlist tickers so prices show up
-    # without a manual subscribe.
-    for entry in storage.list_watchlist():
+    # Pre-warm the broadcaster with watchlist + position tickers so the
+    # header strip and dashboard widgets see live prices without waiting
+    # for a user to land on a page that subscribes.
+    prewarm: set = set()
+    try:
+        for entry in storage.list_watchlist():
+            prewarm.add(entry["ticker"])
+    except Exception:
+        pass
+    try:
+        for p in storage.list_positions(include_closed=False):
+            if p.get("ticker"):
+                prewarm.add(p["ticker"])
+    except Exception:
+        pass
+    for ticker in prewarm:
         try:
-            await broadcaster.subscribe("price", entry["ticker"])
+            await broadcaster.subscribe("price", ticker)
         except Exception:
             pass
     # Per-ticker auto-run scheduler — ticks every 60s, evaluates each
@@ -142,6 +156,7 @@ app.include_router(dashboard_router.router)
 app.include_router(discover_router.router)
 app.include_router(schedules_router.router)
 app.include_router(backtest_router.router)
+app.include_router(risk_router.router)
 
 
 def main() -> int:

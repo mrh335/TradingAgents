@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
+import { LiveTickerStrip } from "@/components/LiveTickerStrip";
 import { Providers } from "./providers";
 import "./globals.css";
 
@@ -60,8 +61,9 @@ export default function RootLayout({
                 ))}
               </nav>
             </aside>
-            <main className="flex-1 px-6 py-6 max-w-[1400px] mx-auto w-full">
-              {children}
+            <main className="flex-1 max-w-[1400px] mx-auto w-full flex flex-col">
+              <LiveTickerStrip />
+              <div className="px-6 py-6">{children}</div>
             </main>
           </div>
         </Providers>
