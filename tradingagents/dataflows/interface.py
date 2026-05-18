@@ -24,6 +24,12 @@ from .alpha_vantage import (
 )
 from .alpha_vantage_common import AlphaVantageRateLimitError
 from .congress_trades import get_congress_trades as get_capitol_trades_congress_trades
+from .pro_signals import (
+    get_short_interest as get_yfinance_short_interest,
+    get_analyst_targets as get_yfinance_analyst_targets,
+    get_insider_streak as get_yfinance_insider_streak,
+    get_earnings_calendar as get_yfinance_earnings_calendar,
+)
 
 # Configuration and routing logic
 from .config import get_config
@@ -58,6 +64,10 @@ TOOLS_CATEGORIES = {
             "get_global_news",
             "get_insider_transactions",
             "get_congress_trades",
+            "get_short_interest",
+            "get_analyst_targets",
+            "get_insider_streak",
+            "get_earnings_calendar",
         ]
     }
 }
@@ -116,6 +126,24 @@ VENDOR_METHODS = {
     "get_congress_trades": {
         "alpha_vantage": get_capitol_trades_congress_trades,
         "yfinance": get_capitol_trades_congress_trades,
+    },
+    # Pro-grade signals — all yfinance-backed (no separate API key needed).
+    # Same impl for both vendor keys since the data source is fixed.
+    "get_short_interest": {
+        "alpha_vantage": get_yfinance_short_interest,
+        "yfinance": get_yfinance_short_interest,
+    },
+    "get_analyst_targets": {
+        "alpha_vantage": get_yfinance_analyst_targets,
+        "yfinance": get_yfinance_analyst_targets,
+    },
+    "get_insider_streak": {
+        "alpha_vantage": get_yfinance_insider_streak,
+        "yfinance": get_yfinance_insider_streak,
+    },
+    "get_earnings_calendar": {
+        "alpha_vantage": get_yfinance_earnings_calendar,
+        "yfinance": get_yfinance_earnings_calendar,
     },
 }
 

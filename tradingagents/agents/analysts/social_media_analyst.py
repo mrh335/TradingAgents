@@ -1,9 +1,12 @@
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from tradingagents.agents.utils.agent_utils import (
     build_instrument_context,
+    get_analyst_targets,
     get_congress_trades,
+    get_insider_streak,
     get_language_instruction,
     get_news,
+    get_short_interest,
 )
 from tradingagents.dataflows.config import get_config
 
@@ -16,12 +19,26 @@ def create_social_media_analyst(llm):
         tools = [
             get_news,
             get_congress_trades,
+            get_insider_streak,
+            get_short_interest,
+            get_analyst_targets,
         ]
 
         system_message = (
-            "You are a social media and company specific news researcher/analyst tasked with analyzing social media posts, recent company news, and public sentiment for a specific company over the past week. You will be given a company's name your objective is to write a comprehensive long report detailing your analysis, insights, and implications for traders and investors on this company's current state after looking at social media and what people are saying about that company, analyzing sentiment data of what people feel each day about the company, and looking at recent company news. Use the get_news(query, start_date, end_date) tool to search for company-specific news and social media discussions. Try to look at all sources possible from social media to sentiment to news. Provide specific, actionable insights with supporting evidence to help traders make informed decisions."
-            + " ALSO use `get_congress_trades(ticker, lookback_days)` to surface any STOCK Act disclosures by US House or Senate members for this ticker. Heavy clusters of same-direction trades — especially from members of relevant committees (Finance, Armed Services, Energy, etc.) — are a smart-money signal worth calling out alongside the social-media narrative. Note that filings lag the actual trade by 30-45 days."
-            + """ Make sure to append a Markdown table at the end of the report to organize key points in the report, organized and easy to read."""
+            "You are a social media and company specific news researcher/analyst tasked with analyzing social media posts, recent company news, and public sentiment for a specific company over the past week. You will be given a company's name your objective is to write a comprehensive long report detailing your analysis, insights, and implications for traders and investors on this company's current state after looking at social media and what people are saying about that company, analyzing sentiment data of what people feel each day about the company, and looking at recent company news."
+            + "\n\n**Tools — use ALL of these:**"
+            + "\n- `get_news(query, start_date, end_date)` — company-specific news and social-media discussions"
+            + "\n- `get_insider_streak(ticker)` — count of consecutive insider buys vs sells over 90 days, classified BULLISH / NEUTRAL / BEARISH"
+            + "\n- `get_congress_trades(ticker, lookback_days)` — STOCK Act disclosures by US House + Senate (lagging signal — 30-45d filing delay)"
+            + "\n- `get_short_interest(ticker)` — short percent of float, days-to-cover, vs prior month (squeeze setup or institutional bearishness)"
+            + "\n- `get_analyst_targets(ticker)` — Wall Street consensus targets + buy/hold/sell distribution"
+            + "\n\n**Sentiment synthesis directives:**"
+            + " Look at ALL sources possible from social media to sentiment to news AND positioning data (insider streak, short interest, analyst targets, congress trades). The positioning data is often the leading indicator that social-media chatter eventually catches up to."
+            + " If insider streak is STRONG BULLISH and social-media sentiment is negative, that's a meaningful divergence worth flagging — insiders know more."
+            + " If short interest is >15% and rising, the bear case is being expressed loudly via positioning even if news flow is neutral."
+            + " If analyst targets imply >25% upside, the consensus disagrees with the current price — flag whether the disagreement is justified by recent news."
+            + " Provide specific, actionable insights with supporting evidence to help traders make informed decisions."
+            + " Make sure to append a Markdown table at the end of the report to organize key points in the report, organized and easy to read."
             + get_language_instruction()
         )
 

@@ -17,6 +17,10 @@ from tradingagents.agents.utils.news_data_tools import (
     get_news,
     get_insider_transactions,
     get_congress_trades,
+    get_short_interest,
+    get_analyst_targets,
+    get_insider_streak,
+    get_earnings_calendar,
     get_global_news,
 )
 
