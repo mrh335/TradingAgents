@@ -73,7 +73,14 @@ def _tick() -> Dict[str, Any]:
                 summary["errors"] += 1
                 continue
 
-            if latest["accession_no"] == prior_accession:
+            # Skip if we already have this accession AND the prior parse
+            # succeeded (positions > 0). If position_count is 0 or NULL
+            # for this accession, a previous attempt failed to extract
+            # positions — re-try the fetch+parse so a fixed parser can
+            # rescue the row without manual intervention.
+            prior_count = m.get("position_count") or 0
+            prior_error = m.get("last_error")
+            if latest["accession_no"] == prior_accession and prior_count > 0 and not prior_error:
                 summary["managers_skipped"] += 1
                 # Refresh the last_refreshed_at timestamp so the UI shows
                 # the check actually happened.
