@@ -288,23 +288,27 @@ function RevisionsTable({ revisions }: { revisions: EstimateRevision[] }) {
     <section>
       <h2 className="text-lg font-semibold mb-2">Analyst EPS estimate revisions</h2>
       <p className="text-xs text-muted mb-3">
-        Current consensus EPS estimate vs the estimate as of 7/30/60/90 days
-        ago, per horizon. Analysts revising{" "}
-        <span className="text-success">up</span> is the strongest near-term
-        signal academic research identifies — stronger than the level of the
-        estimate itself.
+        Current consensus EPS estimate per horizon, plus the count of
+        analysts who revised <span className="text-success">up</span> vs{" "}
+        <span className="text-danger">down</span> in the last 7 and 30 days.
+        Net 30-day count is the strongest near-term signal academic research
+        identifies — when net is positive and growing, the stock tends to
+        drift up in the following weeks.
       </p>
       <div className="card overflow-x-auto">
         <table className="w-full text-sm">
           <thead className="text-left text-xs uppercase text-muted">
             <tr>
               <th className="py-2">Horizon</th>
-              <th className="text-right">Current</th>
-              <th className="text-right">7d ago</th>
-              <th className="text-right">30d ago</th>
-              <th className="text-right">60d ago</th>
-              <th className="text-right">90d ago</th>
-              <th className="text-right">30d Δ</th>
+              <th className="text-right">EPS est</th>
+              <th className="text-right">Range</th>
+              <th className="text-right">Analysts</th>
+              <th className="text-right">Growth</th>
+              <th className="text-right text-success">↑7d</th>
+              <th className="text-right text-danger">↓7d</th>
+              <th className="text-right text-success">↑30d</th>
+              <th className="text-right text-danger">↓30d</th>
+              <th className="text-right">Net 30d</th>
               <th>Dir</th>
             </tr>
           </thead>
@@ -312,21 +316,30 @@ function RevisionsTable({ revisions }: { revisions: EstimateRevision[] }) {
             {revisions.map((r) => (
               <tr key={r.horizon} className="border-t border-border">
                 <td className="py-2 font-semibold">{HORIZON_LABEL[r.horizon]}</td>
-                <td className="text-right tabular-nums">{fmtEps(r.current)}</td>
-                <td className="text-right tabular-nums text-muted">
-                  {fmtEps(r.seven_days_ago)}
+                <td className="text-right tabular-nums">{fmtEps(r.current_estimate)}</td>
+                <td className="text-right tabular-nums text-muted text-xs">
+                  {fmtEps(r.low_estimate)} – {fmtEps(r.high_estimate)}
                 </td>
                 <td className="text-right tabular-nums text-muted">
-                  {fmtEps(r.thirty_days_ago)}
+                  {r.analyst_count ?? "—"}
                 </td>
-                <td className="text-right tabular-nums text-muted">
-                  {fmtEps(r.sixty_days_ago)}
+                <td className={`text-right tabular-nums ${(r.growth_pct ?? 0) > 0 ? "text-success" : (r.growth_pct ?? 0) < 0 ? "text-danger" : "text-muted"}`}>
+                  {fmtPct(r.growth_pct)}
                 </td>
-                <td className="text-right tabular-nums text-muted">
-                  {fmtEps(r.ninety_days_ago)}
+                <td className="text-right tabular-nums text-success">
+                  {r.up_last_7d ?? "—"}
                 </td>
-                <td className={`text-right tabular-nums font-semibold ${directionTone(r.direction)}`}>
-                  {fmtPct(r.revision_30d_pct)}
+                <td className="text-right tabular-nums text-danger">
+                  {r.down_last_7d ?? "—"}
+                </td>
+                <td className="text-right tabular-nums text-success">
+                  {r.up_last_30d ?? "—"}
+                </td>
+                <td className="text-right tabular-nums text-danger">
+                  {r.down_last_30d ?? "—"}
+                </td>
+                <td className={`text-right tabular-nums font-semibold ${(r.net_30d ?? 0) > 0 ? "text-success" : (r.net_30d ?? 0) < 0 ? "text-danger" : "text-muted"}`}>
+                  {r.net_30d === null ? "—" : (r.net_30d > 0 ? `+${r.net_30d}` : r.net_30d)}
                 </td>
                 <td className={`text-lg font-bold ${directionTone(r.direction)}`}>
                   {directionArrow(r.direction)}

@@ -1165,17 +1165,26 @@ _EARNINGS_CACHE_TTL_SEC = 900
 
 def _next_earnings_date(ticker: str):
     """Resolve the next earnings date for a ticker via yfinance, with a
-    15-min in-memory cache to avoid hammering the upstream.
+    short in-memory cache.
 
     Returns a ``date`` or ``None`` if not available.
+
+    Cache behaviour: hits live for 15 minutes; MISSES (None results)
+    live for only 60 seconds. Without that distinction, one transient
+    yfinance error stamps None into the cache for 15 min and locks out
+    later calls — exactly the symptom that hid the next-earnings date
+    on the AAPL row.
     """
     from datetime import date as _date, datetime as _dt
     import time
     t = (ticker or "").upper()
     now_ts = time.time()
     cached = _EARNINGS_DATE_CACHE.get(t)
-    if cached and (now_ts - cached[1] < _EARNINGS_CACHE_TTL_SEC):
-        return cached[0]
+    if cached:
+        cached_value, cached_ts = cached
+        ttl = _EARNINGS_CACHE_TTL_SEC if cached_value is not None else 60
+        if now_ts - cached_ts < ttl:
+            return cached_value
     try:
         import yfinance as yf
         cal = yf.Ticker(t).calendar
@@ -1183,7 +1192,15 @@ def _next_earnings_date(ticker: str):
             ed = cal.get("Earnings Date") or cal.get("earningsDate")
             if isinstance(ed, list) and ed:
                 ed = ed[0]
-            if hasattr(ed, "date"):
+            # yfinance returns bare `date` objects from .calendar, but
+            # `datetime` from other endpoints. date objects do NOT have a
+            # .date() method — checking isinstance(_date) first prevents
+            # the silent-None bug.
+            if isinstance(ed, _date) and not hasattr(ed, "time"):
+                # `date` (no time component) — pass through
+                resolved = ed
+            elif hasattr(ed, "date") and callable(getattr(ed, "date")):
+                # datetime — strip to date
                 resolved = ed.date()
             elif isinstance(ed, str):
                 resolved = _dt.fromisoformat(ed[:10]).date()

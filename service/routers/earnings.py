@@ -57,14 +57,30 @@ class EarningsQuarter(BaseModel):
 
 
 class EstimateRevision(BaseModel):
+    """Analyst EPS estimate state for one forecast horizon.
+
+    yfinance gives us two pieces:
+      - ``earnings_estimate`` row: current avg, low, high, analyst count,
+        growth rate, year-ago EPS
+      - ``eps_revisions`` row: COUNT of analysts revising up vs down
+        over the last 7 and 30 days
+
+    The revision-count data is the actual "revision breadth" signal that
+    academic research identifies as a near-term direction predictor.
+    """
     horizon: str  # 'current_quarter' | 'next_quarter' | 'current_year' | 'next_year'
-    current: Optional[float] = None
-    seven_days_ago: Optional[float] = None
-    thirty_days_ago: Optional[float] = None
-    sixty_days_ago: Optional[float] = None
-    ninety_days_ago: Optional[float] = None
-    revision_30d_pct: Optional[float] = None  # (current - 30d) / 30d × 100
-    direction: Optional[str] = None  # 'up' | 'down' | 'flat' | None
+    current_estimate: Optional[float] = None
+    low_estimate: Optional[float] = None
+    high_estimate: Optional[float] = None
+    analyst_count: Optional[int] = None
+    growth_pct: Optional[float] = None       # expected growth vs year-ago
+    year_ago_eps: Optional[float] = None
+    up_last_7d: Optional[int] = None
+    down_last_7d: Optional[int] = None
+    up_last_30d: Optional[int] = None
+    down_last_30d: Optional[int] = None
+    net_30d: Optional[int] = None             # up_30d - down_30d
+    direction: Optional[str] = None           # 'up' | 'down' | 'flat'
 
 
 class RecommendationMix(BaseModel):
@@ -194,74 +210,124 @@ def _fetch_earnings_history(ticker: str) -> tuple[List[EarningsQuarter], Optiona
 
 
 def _fetch_revisions(ticker: str) -> List[EstimateRevision]:
-    """Pull yfinance.Ticker.earnings_estimate — the matrix of analyst
-    EPS estimates current vs 7d / 30d / 60d / 90d ago, across 4 horizons
-    (current quarter / next quarter / current year / next year).
-    Returns one EstimateRevision per horizon present."""
+    """Pull yfinance.Ticker.earnings_estimate + .eps_revisions.
+
+    Two distinct DataFrames keyed by the same period index ('0q', '+1q',
+    '0y', '+1y'):
+
+    - **earnings_estimate** has the current consensus (avg, low, high)
+      + analyst count + expected growth + year-ago EPS for context.
+
+    - **eps_revisions** has the COUNT of analysts revising up vs down
+      in the last 7 and 30 days. This is the actual revision-breadth
+      signal — academic research identifies the net up-down count as
+      a near-term direction predictor.
+
+    We merge both into one EstimateRevision per horizon and compute a
+    direction flag from the 30-day net count (with a 50% margin to
+    avoid flapping on tie-ish counts).
+    """
     try:
         import yfinance as yf
         t = yf.Ticker(ticker.upper())
     except ImportError:
         return []
 
-    out: List[EstimateRevision] = []
-    try:
-        ee = t.earnings_estimate
-    except Exception as e:
-        logger.warning(f"earnings_estimate fetch failed {ticker}: {e}")
-        return []
-
-    if ee is None or ee.empty:
-        return []
-
-    # yfinance returns a DataFrame where:
-    #   - Index is the horizon label: '0q', '+1q', '0y', '+1y'
-    #   - Columns include: avg, low, high, numberOfAnalysts,
-    #     yearAgoEps, growth, currentEstimate, 7daysAgo, 30daysAgo,
-    #     60daysAgo, 90daysAgo  (column names vary across yf versions)
     horizon_labels = {
         "0q": "current_quarter",
         "+1q": "next_quarter",
         "0y": "current_year",
         "+1y": "next_year",
     }
-    for raw_idx, label in horizon_labels.items():
-        if raw_idx not in ee.index:
-            continue
-        row = ee.loc[raw_idx]
-        # Try multiple column name variants.
-        def _get(*names: str) -> Optional[float]:
-            for n in names:
-                if n in row and row[n] is not None:
-                    v = _safe_float(row[n])
-                    if v is not None:
-                        return v
-            return None
-        cur = _get("avg", "currentEstimate", "current")
-        d7 = _get("7daysAgo", "7_days_ago", "7daysago")
-        d30 = _get("30daysAgo", "30_days_ago", "30daysago")
-        d60 = _get("60daysAgo", "60_days_ago", "60daysago")
-        d90 = _get("90daysAgo", "90_days_ago", "90daysago")
 
-        rev30 = None
+    # --- earnings_estimate ---
+    ee = None
+    try:
+        ee = t.earnings_estimate
+    except Exception as e:
+        logger.warning(f"earnings_estimate fetch failed {ticker}: {e}")
+
+    # --- eps_revisions ---
+    er = None
+    try:
+        er = t.eps_revisions
+    except Exception as e:
+        logger.warning(f"eps_revisions fetch failed {ticker}: {e}")
+
+    if (ee is None or ee.empty) and (er is None or er.empty):
+        return []
+
+    def _safe_int(v: Any) -> Optional[int]:
+        try:
+            if v is None:
+                return None
+            f = float(v)
+            if f != f:  # NaN
+                return None
+            return int(f)
+        except (TypeError, ValueError):
+            return None
+
+    out: List[EstimateRevision] = []
+    for raw_idx, label in horizon_labels.items():
+        ee_row = ee.loc[raw_idx] if (ee is not None and raw_idx in ee.index) else None
+        er_row = er.loc[raw_idx] if (er is not None and raw_idx in er.index) else None
+
+        if ee_row is None and er_row is None:
+            continue
+
+        cur = _safe_float(ee_row.get("avg")) if ee_row is not None else None
+        low = _safe_float(ee_row.get("low")) if ee_row is not None else None
+        high = _safe_float(ee_row.get("high")) if ee_row is not None else None
+        analyst_count = _safe_int(ee_row.get("numberOfAnalysts")) if ee_row is not None else None
+        growth = _safe_float(ee_row.get("growth")) if ee_row is not None else None
+        # yfinance reports growth as a decimal (0.20 = 20%)
+        growth_pct = growth * 100.0 if growth is not None else None
+        year_ago = _safe_float(ee_row.get("yearAgoEps")) if ee_row is not None else None
+
+        # eps_revisions columns are inconsistently-cased across versions:
+        # ``upLast7days``, ``downLast7Days``, ``upLast30days``, ``downLast30days``.
+        # Look up case-insensitively to be safe.
+        def _col(row, *names) -> Optional[int]:
+            if row is None:
+                return None
+            lower_map = {str(k).lower(): k for k in row.index}
+            for n in names:
+                hit = lower_map.get(n.lower())
+                if hit is not None:
+                    return _safe_int(row.get(hit))
+            return None
+
+        up7 = _col(er_row, "upLast7days", "upLast7Days")
+        down7 = _col(er_row, "downLast7Days", "downLast7days")
+        up30 = _col(er_row, "upLast30days", "upLast30Days")
+        down30 = _col(er_row, "downLast30Days", "downLast30days")
+
+        net30 = None
         direction = None
-        if cur is not None and d30 is not None and d30 != 0:
-            rev30 = (cur - d30) / abs(d30) * 100.0
-            if rev30 > 1:
+        if up30 is not None and down30 is not None:
+            net30 = up30 - down30
+            # 50% margin to avoid noise — needs a clear lead to flag a direction
+            if up30 > down30 * 1.5 and up30 > 0:
                 direction = "up"
-            elif rev30 < -1:
+            elif down30 > up30 * 1.5 and down30 > 0:
                 direction = "down"
             else:
                 direction = "flat"
 
         out.append(EstimateRevision(
             horizon=label,
-            current=round(cur, 4) if cur is not None else None,
-            seven_days_ago=round(d7, 4) if d7 is not None else None,
-            thirty_days_ago=round(d30, 4) if d30 is not None else None,
-            sixty_days_ago=round(d60, 4) if d60 is not None else None,
-            ninety_days_ago=round(d90, 4) if d90 is not None else None,
-            revision_30d_pct=round(rev30, 2) if rev30 is not None else None,
+            current_estimate=round(cur, 4) if cur is not None else None,
+            low_estimate=round(low, 4) if low is not None else None,
+            high_estimate=round(high, 4) if high is not None else None,
+            analyst_count=analyst_count,
+            growth_pct=round(growth_pct, 2) if growth_pct is not None else None,
+            year_ago_eps=round(year_ago, 4) if year_ago is not None else None,
+            up_last_7d=up7,
+            down_last_7d=down7,
+            up_last_30d=up30,
+            down_last_30d=down30,
+            net_30d=net30,
             direction=direction,
         ))
     return out

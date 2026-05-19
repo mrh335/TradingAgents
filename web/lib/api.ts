@@ -1068,12 +1068,17 @@ export type EarningsQuarter = {
 
 export type EstimateRevision = {
   horizon: "current_quarter" | "next_quarter" | "current_year" | "next_year";
-  current: number | null;
-  seven_days_ago: number | null;
-  thirty_days_ago: number | null;
-  sixty_days_ago: number | null;
-  ninety_days_ago: number | null;
-  revision_30d_pct: number | null;
+  current_estimate: number | null;
+  low_estimate: number | null;
+  high_estimate: number | null;
+  analyst_count: number | null;
+  growth_pct: number | null;
+  year_ago_eps: number | null;
+  up_last_7d: number | null;
+  down_last_7d: number | null;
+  up_last_30d: number | null;
+  down_last_30d: number | null;
+  net_30d: number | null;
   direction: "up" | "down" | "flat" | null;
 };
 
