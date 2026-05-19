@@ -1055,6 +1055,101 @@ export const RunQueue = {
     request<{ deleted: string }>(`/run-queue/${id}`, { method: "DELETE" }),
 };
 
+// ---- Portfolio metrics (52-wk range, MA distance, SPY comparison) -------
+
+export type PositionMetrics = {
+  ticker: string;
+  position_id: number;
+  shares: number;
+  cost_basis_per_share: number;
+  opened_at: string;
+  current_price: number | null;
+  current_value: number | null;
+  unrealized_pnl: number | null;
+  unrealized_pnl_pct: number | null;
+  high_52w: number | null;
+  low_52w: number | null;
+  range_position_pct: number | null;
+  sma_50: number | null;
+  sma_200: number | null;
+  pct_vs_sma_50: number | null;
+  pct_vs_sma_200: number | null;
+  golden_cross: boolean | null;
+  position_return_pct: number | null;
+  spy_return_same_period_pct: number | null;
+  alpha_vs_spy_pct: number | null;
+  spy_equivalent_value: number | null;
+};
+
+export type PortfolioMetricsResponse = {
+  rows: PositionMetrics[];
+  summary: {
+    position_count: number;
+    total_cost_basis: number;
+    total_current_value: number;
+    total_spy_equivalent: number;
+    blended_return_pct: number | null;
+    blended_spy_return_pct: number | null;
+    blended_alpha_pct: number | null;
+    winners_vs_spy: number;
+    losers_vs_spy: number;
+  };
+};
+
+export const PortfolioMetrics = {
+  get: () => request<PortfolioMetricsResponse>("/portfolio/metrics"),
+};
+
+// ---- Macro dashboard + sector rotation -----------------------------------
+
+export type MacroPoint = {
+  ticker: string;
+  label: string;
+  hint: string;
+  last: number | null;
+  pct_1d: number | null;
+  pct_1w: number | null;
+  pct_1m: number | null;
+  last_updated: string | null;
+};
+
+export type MacroDashboardResponse = {
+  series: MacroPoint[];
+  derived: {
+    "10y_minus_3mo_spread_pct"?: number;
+    "10y_minus_3mo_inverted"?: boolean;
+    hyg_ief_ratio?: number;
+    regime?: "stressed" | "cautious" | "calm" | "complacent";
+    vix_level?: number;
+  };
+  as_of: string;
+};
+
+export type SectorRow = {
+  ticker: string;
+  sector: string;
+  last: number | null;
+  pct_1m: number | null;
+  pct_3m: number | null;
+  pct_6m: number | null;
+  pct_ytd: number | null;
+};
+
+export type SectorRotationResponse = {
+  rows: SectorRow[];
+  leadership: {
+    top_3_3m: string[];
+    bottom_3_3m: string[];
+    spread_3m_pct: number | null;
+  };
+  as_of: string;
+};
+
+export const Macro = {
+  dashboard: () => request<MacroDashboardResponse>("/macro/dashboard"),
+  sectorRotation: () => request<SectorRotationResponse>("/macro/sector-rotation"),
+};
+
 // ---- 13F institutional holdings (smart-money view) -----------------------
 
 export type Manager13F = {

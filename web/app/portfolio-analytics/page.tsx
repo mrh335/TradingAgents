@@ -3,7 +3,15 @@
 import { useState } from "react";
 import Link from "next/link";
 import { useQuery } from "@tanstack/react-query";
-import { PortfolioAnalytics, Risk, type AccountRollup, type CorrelationCell, type PositionRisk } from "@/lib/api";
+import {
+  PortfolioAnalytics,
+  PortfolioMetrics,
+  Risk,
+  type AccountRollup,
+  type CorrelationCell,
+  type PositionMetrics,
+  type PositionRisk,
+} from "@/lib/api";
 
 function fmtUsd(n: number | null): string {
   if (n === null || n === undefined) return "—";
@@ -67,6 +75,9 @@ export default function PortfolioAnalyticsPage() {
           breaks the book down by which account holds what.
         </p>
       </header>
+
+      {/* ─── Per-position metrics (52-wk range, MA distance, SPY compare) ─── */}
+      <PositionMetricsSection />
 
       {/* ─── Multi-account rollup ─── */}
       <section>
@@ -441,5 +452,155 @@ function HighCorrPair({ p }: { p: CorrelationCell }) {
       <code className="text-warning font-semibold">{p.a}</code> ↔{" "}
       <code className="text-warning font-semibold">{p.b}</code>: ρ = {p.correlation}
     </li>
+  );
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// Per-position metrics: 52-wk range, MA distance, return vs SPY.
+//
+// The "vs SPY" column is the most-asked sanity check: had you put the
+// same $$ into SPY on your buy-date instead of this stock, what would
+// it be worth? Positive alpha = you're beating the index on this name.
+// ──────────────────────────────────────────────────────────────────────
+
+function PositionMetricsSection() {
+  const q = useQuery({
+    queryKey: ["portfolio-metrics"],
+    queryFn: () => PortfolioMetrics.get(),
+    refetchInterval: 5 * 60_000,
+    refetchOnWindowFocus: false,
+  });
+
+  if (q.isLoading) {
+    return (
+      <section>
+        <h2 className="text-lg font-semibold mb-3">Per-position metrics</h2>
+        <div className="card text-muted text-sm">
+          Computing (yfinance fetch per ticker — ~5-10s on cold cache)…
+        </div>
+      </section>
+    );
+  }
+  if (!q.data || q.data.rows.length === 0) {
+    return (
+      <section>
+        <h2 className="text-lg font-semibold mb-3">Per-position metrics</h2>
+        <div className="card text-sm text-muted">
+          No open positions to analyse.
+        </div>
+      </section>
+    );
+  }
+
+  const { rows, summary } = q.data;
+  const blendedTone = (summary.blended_alpha_pct ?? 0) >= 0 ? "text-success" : "text-danger";
+
+  return (
+    <section>
+      <h2 className="text-lg font-semibold mb-3">Per-position metrics</h2>
+      <p className="text-muted text-xs mb-3">
+        Trend health (52-wk range position, distance from 50d/200d SMAs) +
+        return vs same-$$-in-SPY since each buy-date. The <em>α vs SPY</em>{" "}
+        column is the most-direct &quot;am I beating the index on this name&quot;
+        readout.
+      </p>
+
+      {/* Blended summary */}
+      <div className="card grid grid-cols-2 md:grid-cols-4 gap-4 mb-3">
+        <div>
+          <div className="text-xs text-muted">Your blended return</div>
+          <div className={`text-xl font-bold ${(summary.blended_return_pct ?? 0) >= 0 ? "text-success" : "text-danger"}`}>
+            {fmtPct(summary.blended_return_pct)}
+          </div>
+        </div>
+        <div>
+          <div className="text-xs text-muted">SPY same-periods</div>
+          <div className="text-xl font-bold text-muted">
+            {fmtPct(summary.blended_spy_return_pct)}
+          </div>
+        </div>
+        <div>
+          <div className="text-xs text-muted">Blended α vs SPY</div>
+          <div className={`text-xl font-bold ${blendedTone}`}>
+            {fmtPct(summary.blended_alpha_pct)}
+          </div>
+          <div className="text-xs text-muted mt-0.5">
+            {summary.winners_vs_spy} winners · {summary.losers_vs_spy} losers
+          </div>
+        </div>
+        <div>
+          <div className="text-xs text-muted">Current value</div>
+          <div className="text-xl font-bold">{fmtUsd(summary.total_current_value)}</div>
+          <div className="text-xs text-muted mt-0.5">
+            cost: {fmtUsd(summary.total_cost_basis)}
+          </div>
+        </div>
+      </div>
+
+      {/* Per-position table */}
+      <div className="card overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead className="text-left text-xs uppercase text-muted">
+            <tr>
+              <th className="py-2">Ticker</th>
+              <th className="text-right">Price</th>
+              <th className="text-right">52-wk %</th>
+              <th className="text-right">vs 50d</th>
+              <th className="text-right">vs 200d</th>
+              <th>Trend</th>
+              <th className="text-right">Your return</th>
+              <th className="text-right">SPY same</th>
+              <th className="text-right">α vs SPY</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r: PositionMetrics) => (
+              <tr key={r.position_id} className="border-t border-border">
+                <td className="py-2 font-semibold">{r.ticker}</td>
+                <td className="text-right tabular-nums">
+                  {r.current_price === null ? "—" : `$${r.current_price.toFixed(2)}`}
+                </td>
+                <td className="text-right tabular-nums" title={r.high_52w && r.low_52w ? `low $${r.low_52w} → high $${r.high_52w}` : ""}>
+                  {r.range_position_pct === null ? "—" : `${r.range_position_pct.toFixed(0)}%`}
+                </td>
+                <td className={`text-right tabular-nums ${(r.pct_vs_sma_50 ?? 0) >= 0 ? "text-success" : "text-danger"}`}>
+                  {fmtPct(r.pct_vs_sma_50)}
+                </td>
+                <td className={`text-right tabular-nums ${(r.pct_vs_sma_200 ?? 0) >= 0 ? "text-success" : "text-danger"}`}>
+                  {fmtPct(r.pct_vs_sma_200)}
+                </td>
+                <td>
+                  {r.golden_cross === true && (
+                    <span className="text-xs text-success font-semibold">golden ↑</span>
+                  )}
+                  {r.golden_cross === false && (
+                    <span className="text-xs text-danger font-semibold">death ↓</span>
+                  )}
+                  {r.golden_cross === null && (
+                    <span className="text-xs text-muted">—</span>
+                  )}
+                </td>
+                <td className={`text-right tabular-nums ${(r.position_return_pct ?? 0) >= 0 ? "text-success" : "text-danger"}`}>
+                  {fmtPct(r.position_return_pct)}
+                </td>
+                <td className="text-right tabular-nums text-muted">
+                  {fmtPct(r.spy_return_same_period_pct)}
+                </td>
+                <td className={`text-right tabular-nums font-semibold ${(r.alpha_vs_spy_pct ?? 0) >= 0 ? "text-success" : "text-danger"}`}>
+                  {fmtPct(r.alpha_vs_spy_pct)}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <p className="text-xs text-muted mt-2">
+        <strong>52-wk %:</strong> 0 = at the 12-month low, 100 = at the high.{" "}
+        <strong>Trend:</strong> golden = 50d above 200d (uptrend), death = 50d
+        below 200d (downtrend). <strong>α vs SPY:</strong> your return minus
+        what SPY did over the same dates per holding — positive means this
+        position is beating the index.
+      </p>
+    </section>
   );
 }

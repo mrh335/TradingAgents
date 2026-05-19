@@ -32,12 +32,14 @@ from service.routers import (
     exports,
     health,
     holders as holders_router,
+    macro as macro_router,
     memory,
     news_alerts as news_alerts_router,
     news_feed,
     notes,
     planner,
     portfolio,
+    portfolio_metrics as portfolio_metrics_router,
     restrictions as restrictions_router,
     risk as risk_router,
     run_queue as run_queue_router,
@@ -172,6 +174,8 @@ app.include_router(risk_router.router)
 app.include_router(trades_router.router)
 app.include_router(news_alerts_router.router)
 app.include_router(holders_router.router)
+app.include_router(portfolio_metrics_router.router)
+app.include_router(macro_router.router)
 
 
 def main() -> int:

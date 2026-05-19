@@ -30,6 +30,7 @@ const NAV = [
   { href: "/backtest", label: "Backtest" },
   { href: "/calendar", label: "Calendar" },
   { href: "/trends", label: "Trends" },
+  { href: "/macro", label: "Macro" },
   { href: "/news", label: "News" },
   { href: "/news-alerts", label: "Alerts" },
   { href: "/simulation", label: "Simulation" },
