@@ -264,20 +264,27 @@ def _compute_actual(run_id: str, ticker: str, trade_date: date,
 
         elif action == "sell" or action == "short":
             shares_sold += shares
-            gross = shares * price - fees
+            gross = shares * price - fees  # net cash received
             proceeds += gross
             # Pop from FIFO front until we've sold ``shares`` worth.
+            # Realized gain per matched lot = (sell_price - lot_cost) × take.
+            # lot_cost already includes the buy-side fees (baked into the
+            # unit cost when the lot was opened). Sell-side fees aren't
+            # in this delta — we subtract them once after the loop so
+            # realized correctly reflects post-commission cash.
             to_sell = shares
+            for_this_sale = 0.0
             while to_sell > 1e-9 and lots:
                 lot_shares, lot_cost = lots[0]
                 take = min(lot_shares, to_sell)
-                realized += take * (price - lot_cost)
+                for_this_sale += take * (price - lot_cost)
                 lot_shares -= take
                 to_sell -= take
                 if lot_shares <= 1e-9:
                     lots.pop(0)
                 else:
                     lots[0][0] = lot_shares
+            realized += for_this_sale - fees
             if to_sell > 1e-9:
                 # Sold more than ever owned — happens for shorts. Treat
                 # the surplus as a short open at this price; no realized
