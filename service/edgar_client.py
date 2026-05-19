@@ -248,16 +248,45 @@ def fetch_holdings(cik: str, accession_no: str) -> List[Dict[str, Any]]:
         logger.warning(f"edgar filing-index {cik}/{accession_no}: {e}")
         return []
 
+    # Two filename patterns exist in the wild for the holdings table:
+    #
+    #  (1) Explicit: ``infotable.xml``, ``form13fInfoTable.xml``,
+    #      ``{accession}_infotable.xml`` — most filers
+    #  (2) Numeric:  ``{5digit}.xml`` (e.g. ``53405.xml``) — Berkshire,
+    #      Duquesne, RenTech, others using certain filing agents
+    #
+    # Strategy: try the explicit names first (they're unambiguous);
+    # if nothing matches, fall back to "any .xml file that isn't
+    # primary_doc.xml". 13F-HR filings always contain exactly one
+    # primary_doc.xml (cover sheet) plus one holdings XML, so the
+    # negation works reliably.
     info_xml_name: Optional[str] = None
+    candidate_xmls: List[str] = []
     for entry in idx.get("directory", {}).get("item", []) or []:
-        name = (entry.get("name") or "").lower()
-        # Common patterns: *_infotable.xml, *infotable.xml, *_information_table.xml
-        if name.endswith(".xml") and ("infotable" in name or "information_table" in name):
-            info_xml_name = entry.get("name")
+        raw = entry.get("name") or ""
+        name = raw.lower()
+        if not name.endswith(".xml"):
+            continue
+        if "infotable" in name or "information_table" in name:
+            info_xml_name = raw
             break
+        # Skip the cover sheet and any per-form XSL wrappers; keep
+        # everything else as a fallback candidate.
+        if name in ("primary_doc.xml", "primarydoc.xml"):
+            continue
+        if name.endswith("-index.xml") or "headers" in name:
+            continue
+        candidate_xmls.append(raw)
+
+    if not info_xml_name and candidate_xmls:
+        # Prefer the smallest-named XML — that pattern tends to be the
+        # numeric ones (e.g. 53405.xml) which ARE the info table.
+        # Multiple fallbacks would be unusual; if it happens, picking
+        # one and letting the XML parse fail closed is acceptable.
+        info_xml_name = candidate_xmls[0]
 
     if not info_xml_name:
-        logger.warning(f"no infotable.xml found in {base}/")
+        logger.warning(f"no infotable.xml or numeric-named XML found in {base}/")
         return []
 
     try:
