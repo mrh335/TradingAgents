@@ -61,6 +61,9 @@ ALLOWED_MODES = {
     "deep_dive",
     # Earnings recap — summarise the most recent earnings call + reaction
     "earnings_recap",
+    # Earnings summary — plain-English digest of the latest press release
+    # written for an engineer, POSTed back to /earnings/{ticker}/summary
+    "earnings_summary",
     # Screener query — run a custom screen against the universe
     "screener_query",
     # Portfolio review — periodic across-book health check (synthesizes

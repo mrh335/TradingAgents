@@ -29,6 +29,7 @@ from service.routers import (
     chat,
     dashboard as dashboard_router,
     discover as discover_router,
+    earnings as earnings_router,
     exports,
     health,
     holders as holders_router,
@@ -176,6 +177,7 @@ app.include_router(news_alerts_router.router)
 app.include_router(holders_router.router)
 app.include_router(portfolio_metrics_router.router)
 app.include_router(macro_router.router)
+app.include_router(earnings_router.router)
 
 
 def main() -> int:

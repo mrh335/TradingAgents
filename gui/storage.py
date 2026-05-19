@@ -276,6 +276,27 @@ def init_db() -> None:
             );
             CREATE INDEX IF NOT EXISTS holdings_13f_ticker ON holdings_13f(ticker, report_date DESC);
             CREATE INDEX IF NOT EXISTS holdings_13f_manager ON holdings_13f(manager_cik, report_date DESC);
+
+            -- Earnings summaries: one row per (ticker, report_date) pair,
+            -- holding the AI-generated plain-English digest of that quarter's
+            -- press release. Sidecar-style content but stored in SQL so we
+            -- can query by ticker + sort by report_date easily. Populated
+            -- by Claude Desktop via the run_queue with mode='earnings_summary';
+            -- the webapp drops the request, the skill fetches the press
+            -- release and structured data, generates the digest, POSTs back.
+            CREATE TABLE IF NOT EXISTS earnings_summaries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ticker TEXT NOT NULL,
+                report_date TEXT NOT NULL,    -- YYYY-MM-DD of the earnings call
+                bullets_md TEXT,              -- plain-english bullet summary (markdown)
+                structured_json TEXT,         -- side-by-side comparison table as JSON
+                source TEXT NOT NULL DEFAULT 'claude-desktop',  -- 'claude-desktop' | 'manual'
+                status TEXT NOT NULL DEFAULT 'pending',         -- 'pending' | 'complete' | 'error'
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(ticker, report_date)
+            );
+            CREATE INDEX IF NOT EXISTS earnings_summaries_ticker ON earnings_summaries(ticker, report_date DESC);
             """
         )
         # Lazy column add — older DBs created before batch support.
@@ -1777,4 +1798,84 @@ def trades_for_ticker_in_window(ticker: str, *, start_date: str,
                WHERE ticker=? AND executed_at >= ? AND executed_at <= ?
                ORDER BY executed_at ASC, id ASC""",
             (ticker.strip().upper(), start_date, end_date),
+        ).fetchall()]
+
+
+# ---------------------------------------------------------------------------
+# Earnings summaries — plain-English digests of each quarter's press release.
+# Populated by Claude Desktop via the run_queue (mode='earnings_summary').
+# ---------------------------------------------------------------------------
+
+def get_earnings_summary(ticker: str, report_date: str) -> Optional[Dict[str, Any]]:
+    with _conn() as c:
+        row = c.execute(
+            """SELECT * FROM earnings_summaries
+               WHERE ticker=? AND report_date=? LIMIT 1""",
+            (ticker.strip().upper(), report_date),
+        ).fetchone()
+        return dict(row) if row else None
+
+
+def latest_earnings_summary(ticker: str) -> Optional[Dict[str, Any]]:
+    """Most recent summary on file for this ticker, regardless of status."""
+    with _conn() as c:
+        row = c.execute(
+            """SELECT * FROM earnings_summaries
+               WHERE ticker=? ORDER BY report_date DESC LIMIT 1""",
+            (ticker.strip().upper(),),
+        ).fetchone()
+        return dict(row) if row else None
+
+
+def upsert_earnings_summary(*, ticker: str, report_date: str,
+                              bullets_md: Optional[str] = None,
+                              structured_json: Optional[str] = None,
+                              source: str = "claude-desktop",
+                              status: str = "complete") -> Dict[str, Any]:
+    """Insert or replace a summary row keyed by (ticker, report_date).
+    Called by the /summary POST endpoint when Claude Desktop pushes
+    back a digest, or by /queue-summary to seed a 'pending' row."""
+    now = _now()
+    t = ticker.strip().upper()
+    with _conn() as c:
+        existing = c.execute(
+            """SELECT id FROM earnings_summaries
+               WHERE ticker=? AND report_date=? LIMIT 1""",
+            (t, report_date),
+        ).fetchone()
+        if existing:
+            c.execute(
+                """UPDATE earnings_summaries SET
+                       bullets_md=COALESCE(?, bullets_md),
+                       structured_json=COALESCE(?, structured_json),
+                       source=?, status=?, updated_at=?
+                   WHERE id=?""",
+                (bullets_md, structured_json, source, status, now, existing["id"]),
+            )
+            rid = existing["id"]
+        else:
+            cur = c.execute(
+                """INSERT INTO earnings_summaries(ticker, report_date,
+                                                   bullets_md, structured_json,
+                                                   source, status,
+                                                   created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (t, report_date, bullets_md, structured_json, source, status,
+                 now, now),
+            )
+            rid = cur.lastrowid
+        row = c.execute(
+            "SELECT * FROM earnings_summaries WHERE id=?", (rid,)
+        ).fetchone()
+        return dict(row)
+
+
+def list_earnings_summaries(ticker: str, *, limit: int = 20) -> List[Dict[str, Any]]:
+    with _conn() as c:
+        return [dict(r) for r in c.execute(
+            """SELECT * FROM earnings_summaries
+               WHERE ticker=?
+               ORDER BY report_date DESC
+               LIMIT ?""",
+            (ticker.strip().upper(), limit),
         ).fetchall()]

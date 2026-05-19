@@ -1055,6 +1055,85 @@ export const RunQueue = {
     request<{ deleted: string }>(`/run-queue/${id}`, { method: "DELETE" }),
 };
 
+// ---- Earnings (viewer + AI summary queue) -------------------------------
+
+export type EarningsQuarter = {
+  report_date: string;
+  eps_actual: number | null;
+  eps_estimate: number | null;
+  eps_surprise_pct: number | null;
+  revenue_actual: number | null;
+  revenue_estimate: number | null;
+};
+
+export type EstimateRevision = {
+  horizon: "current_quarter" | "next_quarter" | "current_year" | "next_year";
+  current: number | null;
+  seven_days_ago: number | null;
+  thirty_days_ago: number | null;
+  sixty_days_ago: number | null;
+  ninety_days_ago: number | null;
+  revision_30d_pct: number | null;
+  direction: "up" | "down" | "flat" | null;
+};
+
+export type RecommendationMix = {
+  period: string;
+  strong_buy: number | null;
+  buy: number | null;
+  hold: number | null;
+  sell: number | null;
+  strong_sell: number | null;
+};
+
+export type EarningsSummaryCard = {
+  report_date: string;
+  bullets_md: string | null;
+  structured_json: Record<string, any> | null;
+  source: string;
+  status: "pending" | "complete" | "error";
+  updated_at: string;
+};
+
+export type EarningsResponse = {
+  ticker: string;
+  next_earnings_date: string | null;
+  days_until_next: number | null;
+  latest_quarter: EarningsQuarter | null;
+  history: EarningsQuarter[];
+  revisions: EstimateRevision[];
+  recommendations: RecommendationMix[];
+  summary: EarningsSummaryCard | null;
+  summary_pending: boolean;
+  note: string | null;
+};
+
+export const Earnings = {
+  get: (ticker: string) =>
+    request<EarningsResponse>(`/earnings/${ticker}`),
+  queueSummary: (ticker: string) =>
+    request<{
+      queue_id: string;
+      ticker: string;
+      report_date: string;
+      status: string;
+      message: string;
+    }>(`/earnings/${ticker}/queue-summary`, { method: "POST" }),
+  submitSummary: (
+    ticker: string,
+    req: {
+      report_date: string;
+      bullets_md?: string;
+      structured?: Record<string, any>;
+      source?: string;
+    },
+  ) =>
+    request<EarningsSummaryCard>(`/earnings/${ticker}/summary`, {
+      method: "POST",
+      body: JSON.stringify(req),
+    }),
+};
+
 // ---- Portfolio metrics (52-wk range, MA distance, SPY comparison) -------
 
 export type PositionMetrics = {
