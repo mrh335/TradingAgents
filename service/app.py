@@ -21,6 +21,7 @@ from gui import storage
 from service.runner_pool import pool
 from service.streaming import broadcaster
 from service.routers import (
+    ask as ask_router,
     backtest as backtest_router,
     batches,
     briefs,
@@ -178,6 +179,7 @@ app.include_router(holders_router.router)
 app.include_router(portfolio_metrics_router.router)
 app.include_router(macro_router.router)
 app.include_router(earnings_router.router)
+app.include_router(ask_router.router)
 
 
 def main() -> int:

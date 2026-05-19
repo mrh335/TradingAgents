@@ -1055,6 +1055,58 @@ export const RunQueue = {
     request<{ deleted: string }>(`/run-queue/${id}`, { method: "DELETE" }),
 };
 
+// ---- Ask (portfolio Q&A — queue or sync) --------------------------------
+
+export type AskMode = "queue" | "sync";
+
+export type AskQuestion = {
+  id: number;
+  conversation_id: string;
+  question: string;
+  answer_md: string | null;
+  mode: AskMode;
+  status: "pending" | "complete" | "error";
+  source: string | null;
+  queue_id: string | null;
+  error_message: string | null;
+  tokens_in: number | null;
+  tokens_out: number | null;
+  requested_at: string;
+  answered_at: string | null;
+};
+
+export type ConversationSummary = {
+  conversation_id: string;
+  started_at: string;
+  last_question_at: string;
+  turn_count: number;
+  last_question_id: number;
+  preview: string;
+};
+
+export const Ask = {
+  submit: (req: {
+    question: string;
+    conversation_id?: string;
+    mode?: AskMode;
+  }) =>
+    request<AskQuestion>("/ask", {
+      method: "POST",
+      body: JSON.stringify({ mode: "queue", ...req }),
+    }),
+  listConversations: (limit = 50) =>
+    request<ConversationSummary[]>(`/ask/conversations?limit=${limit}`),
+  getConversation: (conversation_id: string) =>
+    request<AskQuestion[]>(`/ask/conversation/${conversation_id}`),
+  getQuestion: (question_id: number) =>
+    request<AskQuestion>(`/ask/${question_id}`),
+  submitAnswer: (question_id: number, req: { answer_md: string; source?: string }) =>
+    request<AskQuestion>(`/ask/${question_id}/answer`, {
+      method: "POST",
+      body: JSON.stringify(req),
+    }),
+};
+
 // ---- Earnings (viewer + AI summary queue) -------------------------------
 
 export type EarningsQuarter = {

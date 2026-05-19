@@ -64,6 +64,9 @@ ALLOWED_MODES = {
     # Earnings summary — plain-English digest of the latest press release
     # written for an engineer, POSTed back to /earnings/{ticker}/summary
     "earnings_summary",
+    # Portfolio Q&A — free-form question with a context snapshot, answer
+    # POSTed back to /ask/{question_id}/answer
+    "ask_portfolio",
     # Screener query — run a custom screen against the universe
     "screener_query",
     # Portfolio review — periodic across-book health check (synthesizes

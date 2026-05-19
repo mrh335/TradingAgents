@@ -142,6 +142,18 @@ def _tick(now: Optional[datetime] = None) -> int:
 
         last_fired = _parse_iso(row.get("last_fired_at"))
         if last_fired is None or prev_fire > last_fired:
+            # Dedup: if a previous fire from this schedule is still
+            # pending in the queue (Claude Desktop has been offline,
+            # or the drain is slow), skip this fire instead of piling
+            # up duplicates. Advance last_fired_at so we don't loop
+            # on the same cron tick.
+            if storage.has_pending_for_schedule(row["id"]):
+                storage.record_schedule_fire(row["id"], queue_id=None, error=None)
+                logger.info(
+                    "scheduler skipping schedule_id=%s ticker=%s — pending item exists",
+                    row["id"], row.get("ticker"),
+                )
+                continue
             _fire_schedule(row, now)
             fired += 1
     return fired

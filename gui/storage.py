@@ -277,6 +277,31 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS holdings_13f_ticker ON holdings_13f(ticker, report_date DESC);
             CREATE INDEX IF NOT EXISTS holdings_13f_manager ON holdings_13f(manager_cik, report_date DESC);
 
+            -- Portfolio Q&A: free-form questions asked of the user's
+            -- portfolio + analysis data. Each row is one question with
+            -- its captured context snapshot, the resulting answer, and
+            -- (for queue-mode questions) the run_queue id tracking the
+            -- pending Claude Desktop work. Grouped into multi-turn
+            -- conversations via conversation_id.
+            CREATE TABLE IF NOT EXISTS portfolio_questions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                conversation_id TEXT NOT NULL,    -- groups a thread of questions
+                question TEXT NOT NULL,
+                answer_md TEXT,                    -- the answer (markdown)
+                context_snapshot_json TEXT,        -- positions/runs/trades captured at ask-time
+                mode TEXT NOT NULL DEFAULT 'queue', -- 'queue' (Claude Desktop) | 'sync' (Anthropic API)
+                status TEXT NOT NULL DEFAULT 'pending',  -- 'pending' | 'complete' | 'error'
+                source TEXT,                       -- 'claude-desktop' | 'anthropic-api' | 'manual'
+                queue_id TEXT,                     -- run_queue row id when mode='queue'
+                error_message TEXT,
+                tokens_in INTEGER,                 -- when mode='sync', captures cost
+                tokens_out INTEGER,
+                requested_at TEXT NOT NULL,
+                answered_at TEXT
+            );
+            CREATE INDEX IF NOT EXISTS portfolio_questions_conv ON portfolio_questions(conversation_id, id);
+            CREATE INDEX IF NOT EXISTS portfolio_questions_status ON portfolio_questions(status, requested_at DESC);
+
             -- Earnings summaries: one row per (ticker, report_date) pair,
             -- holding the AI-generated plain-English digest of that quarter's
             -- press release. Sidecar-style content but stored in SQL so we
@@ -1013,6 +1038,22 @@ def delete_schedule(schedule_id: int) -> bool:
             "DELETE FROM ticker_schedules WHERE id=?", (schedule_id,)
         )
         return cur.rowcount > 0
+
+
+def has_pending_for_schedule(schedule_id: int) -> bool:
+    """True if there's an unconsumed run_queue row created by this schedule
+    (status='pending'). Used by the scheduler to dedup repeated fires —
+    if Claude Desktop has been offline and the same daily schedule fired
+    yesterday with no drain since, we don't want to queue a second copy
+    today."""
+    with _conn() as c:
+        row = c.execute(
+            """SELECT id FROM run_queue
+               WHERE requested_by = ? AND status = 'pending'
+               LIMIT 1""",
+            (f"scheduler:{schedule_id}",),
+        ).fetchone()
+        return row is not None
 
 
 def record_schedule_fire(schedule_id: int, *,
@@ -1896,3 +1937,132 @@ def list_earnings_summaries(ticker: str, *, limit: int = 20) -> List[Dict[str, A
                LIMIT ?""",
             (ticker.strip().upper(), limit),
         ).fetchall()]
+
+
+# ---------------------------------------------------------------------------
+# Portfolio Q&A — free-form questions about positions / runs / trades.
+# Two execution modes: queue (Claude Desktop, free, async) or
+# sync (Anthropic API, instant, costs tokens).
+# ---------------------------------------------------------------------------
+
+def new_conversation_id() -> str:
+    return uuid.uuid4().hex[:16]
+
+
+def insert_question(*, conversation_id: str, question: str,
+                     mode: str = "queue",
+                     context_snapshot_json: Optional[str] = None) -> Dict[str, Any]:
+    """Insert a pending question row. Status='pending' until answered.
+    Caller is expected to follow up with attach_queue_id() (for queue
+    mode) or complete_question() (for sync mode)."""
+    now = _now()
+    with _conn() as c:
+        cur = c.execute(
+            """INSERT INTO portfolio_questions(conversation_id, question,
+                                                context_snapshot_json, mode,
+                                                status, requested_at)
+               VALUES (?, ?, ?, ?, 'pending', ?)""",
+            (conversation_id, question, context_snapshot_json, mode, now),
+        )
+        row = c.execute(
+            "SELECT * FROM portfolio_questions WHERE id=?", (cur.lastrowid,)
+        ).fetchone()
+        return dict(row)
+
+
+def attach_queue_id(question_id: int, queue_id: str) -> None:
+    """Link a queue-mode question to its run_queue row."""
+    with _conn() as c:
+        c.execute(
+            "UPDATE portfolio_questions SET queue_id=? WHERE id=?",
+            (queue_id, question_id),
+        )
+
+
+def complete_question(question_id: int, *, answer_md: str,
+                       source: str = "claude-desktop",
+                       tokens_in: Optional[int] = None,
+                       tokens_out: Optional[int] = None) -> Dict[str, Any]:
+    """Mark a question complete with its answer."""
+    now = _now()
+    with _conn() as c:
+        c.execute(
+            """UPDATE portfolio_questions
+               SET answer_md=?, status='complete', source=?, answered_at=?,
+                   tokens_in=COALESCE(?, tokens_in),
+                   tokens_out=COALESCE(?, tokens_out)
+               WHERE id=?""",
+            (answer_md, source, now, tokens_in, tokens_out, question_id),
+        )
+        row = c.execute(
+            "SELECT * FROM portfolio_questions WHERE id=?", (question_id,)
+        ).fetchone()
+        return dict(row) if row else None
+
+
+def fail_question(question_id: int, error: str) -> None:
+    with _conn() as c:
+        c.execute(
+            """UPDATE portfolio_questions
+               SET status='error', error_message=?, answered_at=?
+               WHERE id=?""",
+            (error[:1000], _now(), question_id),
+        )
+
+
+def get_question(question_id: int) -> Optional[Dict[str, Any]]:
+    with _conn() as c:
+        row = c.execute(
+            "SELECT * FROM portfolio_questions WHERE id=?", (question_id,)
+        ).fetchone()
+        return dict(row) if row else None
+
+
+def get_question_by_queue_id(queue_id: str) -> Optional[Dict[str, Any]]:
+    with _conn() as c:
+        row = c.execute(
+            "SELECT * FROM portfolio_questions WHERE queue_id=? LIMIT 1",
+            (queue_id,),
+        ).fetchone()
+        return dict(row) if row else None
+
+
+def list_conversation(conversation_id: str) -> List[Dict[str, Any]]:
+    with _conn() as c:
+        return [dict(r) for r in c.execute(
+            """SELECT * FROM portfolio_questions
+               WHERE conversation_id=? ORDER BY id ASC""",
+            (conversation_id,),
+        ).fetchall()]
+
+
+def list_conversations(*, limit: int = 50) -> List[Dict[str, Any]]:
+    """Aggregate by conversation_id, returning the latest question + count
+    per thread. Used for the /ask sidebar history view."""
+    with _conn() as c:
+        rows = c.execute(
+            """SELECT conversation_id,
+                      MIN(requested_at) AS started_at,
+                      MAX(requested_at) AS last_question_at,
+                      COUNT(*) AS turn_count,
+                      MAX(id) AS last_question_id
+               FROM portfolio_questions
+               GROUP BY conversation_id
+               ORDER BY MAX(id) DESC
+               LIMIT ?""",
+            (limit,),
+        ).fetchall()
+        out = []
+        for r in rows:
+            d = dict(r)
+            # Attach the first-question text as a "title preview"
+            title_row = c.execute(
+                """SELECT question FROM portfolio_questions
+                   WHERE conversation_id=? ORDER BY id ASC LIMIT 1""",
+                (d["conversation_id"],),
+            ).fetchone()
+            d["preview"] = (title_row["question"][:120] if title_row else "") + (
+                "…" if title_row and len(title_row["question"]) > 120 else ""
+            )
+            out.append(d)
+        return out
