@@ -19,6 +19,7 @@ const NAV = [
   { href: "/portfolio", label: "Portfolio" },
   { href: "/portfolio-analytics", label: "Analytics" },
   { href: "/trades", label: "Trades" },
+  { href: "/holders", label: "Holders (13F)" },
   { href: "/restrictions", label: "Restrictions" },
   { href: "/run", label: "Run" },
   { href: "/batch", label: "Batch" },

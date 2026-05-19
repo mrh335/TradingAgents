@@ -624,6 +624,23 @@ export type BacktestWindow = {
   win: boolean | null;
 };
 
+export type ActualPnL = {
+  trade_count: number;
+  shares_bought: number;
+  shares_sold: number;
+  shares_held_end: number;
+  cost_basis: number;
+  proceeds: number;
+  dividends: number;
+  unrealized_value_end: number;
+  realized_pnl: number;
+  total_pnl: number;
+  total_return_pct: number | null;
+  actual_alpha_pct: number | null;
+  end_price: number | null;
+  notes: string | null;
+};
+
 export type BacktestResult = {
   run_id: string;
   ticker: string;
@@ -633,8 +650,37 @@ export type BacktestResult = {
   deep_model: string | null;
   benchmark: string;
   windows: BacktestWindow[];
+  actual: ActualPnL | null;
   computed_at: string;
   note: string | null;
+};
+
+export type ActualVsNotionalRow = {
+  run_id: string;
+  ticker: string;
+  trade_date: string;
+  decision: string | null;
+  notional_return_pct: number | null;
+  notional_alpha_pct: number | null;
+  actual_return_pct: number | null;
+  actual_alpha_pct: number | null;
+  actual_minus_notional_pct: number | null;
+  trade_count: number;
+  cost_basis: number;
+  total_pnl: number;
+};
+
+export type ActualVsNotionalResponse = {
+  window_days: number;
+  runs: ActualVsNotionalRow[];
+  aggregate: {
+    runs_with_actual_trades: number;
+    you_beat_framework: number;
+    mean_behaviour_gap_pct: number | null;
+    total_cost_basis: number;
+    total_realized_plus_unrealized_pnl: number;
+    blended_actual_return_pct: number | null;
+  };
 };
 
 export type HitRateCell = {
@@ -690,10 +736,17 @@ export type AttributionResponse = {
 export const Backtest = {
   summary: (windowDays: number = 30) =>
     request<BacktestSummaryResponse>(`/backtest/?window_days=${windowDays}`),
-  get: (runId: string, force = false) =>
-    request<BacktestResult>(`/backtest/${runId}${force ? "?force=true" : ""}`),
+  get: (runId: string, opts?: { force?: boolean; includeActual?: boolean }) => {
+    const params = new URLSearchParams();
+    if (opts?.force) params.set("force", "true");
+    if (opts?.includeActual) params.set("include_actual", "true");
+    const qs = params.toString();
+    return request<BacktestResult>(`/backtest/${runId}${qs ? `?${qs}` : ""}`);
+  },
   attribution: (windowDays: number = 30) =>
     request<AttributionResponse>(`/backtest/attribution?window_days=${windowDays}`),
+  actualVsNotional: () =>
+    request<ActualVsNotionalResponse>("/backtest/actual-vs-notional"),
   recomputeAll: () =>
     request<{ computed: number; errors: number; error_details: string[] }>(
       "/backtest/recompute-all",
@@ -974,4 +1027,83 @@ export const RunQueue = {
     request<QueueItem>(`/run-queue/${id}/cancel`, { method: "POST" }),
   delete: (id: string) =>
     request<{ deleted: string }>(`/run-queue/${id}`, { method: "DELETE" }),
+};
+
+// ---- 13F institutional holdings (smart-money view) -----------------------
+
+export type Manager13F = {
+  cik: string;
+  name: string;
+  enabled: boolean;
+  last_refreshed_at: string | null;
+  last_filing_date: string | null;
+  last_report_date: string | null;
+  last_accession_no: string | null;
+  total_value: number | null;
+  position_count: number | null;
+  last_error: string | null;
+};
+
+export type Holding13F = {
+  manager_cik: string;
+  manager_name: string;
+  accession_no: string;
+  filing_date: string;
+  report_date: string;
+  cusip: string;
+  ticker: string | null;
+  name_of_issuer: string | null;
+  title_of_class: string | null;
+  shares: number;
+  value: number;
+  put_call: string | null;
+  prev_shares: number | null;
+  qoq_change_pct: number | null;
+  pct_of_manager_aum: number | null;
+};
+
+export type TickerHoldersSummary = {
+  ticker: string;
+  manager_count: number;
+  total_value: number;
+  total_shares: number;
+  top_managers: Array<{
+    name: string;
+    value: number;
+    shares: number;
+    qoq_change_pct: number | null;
+  }>;
+  new_buys: number;
+  large_trims: number;
+  net_share_change_pct: number | null;
+};
+
+export const Holders = {
+  managers: (enabledOnly = false) =>
+    request<Manager13F[]>(`/holders/managers${enabledOnly ? "?enabled_only=true" : ""}`),
+  addManager: (req: { cik: string; name: string; enabled?: boolean }) =>
+    request<Manager13F>("/holders/managers", {
+      method: "POST",
+      body: JSON.stringify({ enabled: true, ...req }),
+    }),
+  toggleManager: (cik: string, enabled: boolean) =>
+    request<Manager13F>(`/holders/managers/${cik}`, {
+      method: "PATCH",
+      body: JSON.stringify({ enabled }),
+    }),
+  managerHoldings: (cik: string, limit = 100) =>
+    request<Holding13F[]>(`/holders/manager/${cik}?limit=${limit}`),
+  tickerHolders: (ticker: string, limit = 50) =>
+    request<Holding13F[]>(`/holders/ticker/${ticker}?limit=${limit}`),
+  tickerSummary: (ticker: string) =>
+    request<TickerHoldersSummary>(`/holders/ticker/${ticker}/summary`),
+  refresh: () =>
+    request<{
+      managers_checked: number;
+      managers_skipped: number;
+      filings_added: number;
+      positions_added: number;
+      errors: number;
+      error_details: string[];
+    }>("/holders/refresh", { method: "POST" }),
 };

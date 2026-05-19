@@ -54,6 +54,27 @@ class BacktestWindow(BaseModel):
     win: Optional[bool] = None
 
 
+class ActualPnL(BaseModel):
+    """Realized + unrealized P&L from the user's actual trades linked
+    to this run via ``trade_journal.linked_run_id``. None across the
+    board when no trades are linked.
+    """
+    trade_count: int = 0
+    shares_bought: float = 0.0
+    shares_sold: float = 0.0
+    shares_held_end: float = 0.0
+    cost_basis: float = 0.0           # $ deployed (gross + fees, FIFO)
+    proceeds: float = 0.0             # $ received from sells (net of fees)
+    dividends: float = 0.0
+    unrealized_value_end: float = 0.0 # shares_held_end × end-of-window price
+    realized_pnl: float = 0.0
+    total_pnl: float = 0.0            # realized + unrealized + dividends
+    total_return_pct: Optional[float] = None  # total_pnl / cost_basis × 100
+    actual_alpha_pct: Optional[float] = None  # actual return minus benchmark return
+    end_price: Optional[float] = None
+    notes: Optional[str] = None
+
+
 class BacktestResult(BaseModel):
     run_id: str
     ticker: str
@@ -63,6 +84,7 @@ class BacktestResult(BaseModel):
     deep_model: Optional[str] = None
     benchmark: str = "SPY"
     windows: List[BacktestWindow]
+    actual: Optional[ActualPnL] = None  # populated when include_actual=true and linked trades exist
     computed_at: str
     note: Optional[str] = None
 
@@ -177,15 +199,167 @@ def _cache_path(archive_path: str) -> Optional[Path]:
     return sidecars_helpers.sidecar_path(archive_path, "backtest.json")
 
 
-def _compute(run_row: Dict[str, Any], force: bool = False) -> BacktestResult:
+def _compute_actual(run_id: str, ticker: str, trade_date: date,
+                     end_date: Optional[date], benchmark_return_pct: Optional[float]) -> Optional[ActualPnL]:
+    """For the trades the user has linked to this run, compute realized
+    + unrealized P&L through the end of the +30d window.
+
+    FIFO cost-basis accounting:
+      - Each buy adds a (shares, total_cost_with_fees) layer
+      - Each sell pops from the front, generating realized P&L
+      - Dividends accrue as positive cash flow with no share impact
+      - Splits multiply remaining lots; transfers move shares without
+        cash impact
+
+    Unrealized = remaining shares × end-of-window closing price.
+
+    Returns None if there are no trades linked to this run, so the
+    UI can hide the "actual" column for un-traded recommendations.
+    """
+    trades = storage.trades_for_run(run_id)
+    if not trades:
+        return None
+
+    try:
+        import yfinance as yf
+        import pandas as pd
+    except ImportError:
+        return ActualPnL(notes="yfinance unavailable — actual P&L not computed")
+
+    # End-of-window closing price for unrealized valuation.
+    end_price: Optional[float] = None
+    if end_date is not None:
+        try:
+            window = yf.Ticker(ticker.upper()).history(
+                start=(end_date - timedelta(days=7)).isoformat(),
+                end=(end_date + timedelta(days=2)).isoformat(),
+                auto_adjust=True,
+            )
+            if window is not None and not window.empty:
+                end_price = float(window["Close"].iloc[-1])
+        except Exception as e:
+            logger.warning(f"actual P&L end-price fetch failed for {ticker}: {e}")
+
+    # FIFO lot stack: list of [shares_remaining, cost_per_share_with_fees].
+    lots: List[List[float]] = []
+    shares_bought = 0.0
+    shares_sold = 0.0
+    cost_basis = 0.0   # total $ deployed (gross + fees on buys)
+    proceeds = 0.0     # total $ received (net of fees on sells)
+    realized = 0.0
+    dividends = 0.0
+
+    for t in trades:
+        action = t.get("action") or "buy"
+        shares = float(t.get("shares") or 0)
+        price = float(t.get("price") or 0)
+        fees = float(t.get("fees") or 0)
+
+        if action == "buy" or action == "cover":
+            shares_bought += shares
+            gross = shares * price + fees
+            cost_basis += gross
+            unit_cost = (shares * price + fees) / shares if shares > 0 else price
+            lots.append([shares, unit_cost])
+
+        elif action == "sell" or action == "short":
+            shares_sold += shares
+            gross = shares * price - fees
+            proceeds += gross
+            # Pop from FIFO front until we've sold ``shares`` worth.
+            to_sell = shares
+            while to_sell > 1e-9 and lots:
+                lot_shares, lot_cost = lots[0]
+                take = min(lot_shares, to_sell)
+                realized += take * (price - lot_cost)
+                lot_shares -= take
+                to_sell -= take
+                if lot_shares <= 1e-9:
+                    lots.pop(0)
+                else:
+                    lots[0][0] = lot_shares
+            if to_sell > 1e-9:
+                # Sold more than ever owned — happens for shorts. Treat
+                # the surplus as a short open at this price; no realized
+                # change until covered.
+                # For our purposes we just leave it as "sold without
+                # cost basis" and the realized number stays as-is. The
+                # unrealized side picks this up as negative shares-held.
+                lots.append([-to_sell, price])
+
+        elif action == "dividend":
+            # Convention from /trades/summary: shares × price is the total
+            # dividend cash. If price=0 we fall back to shares as the $.
+            cash = shares * price if (shares > 0 and price > 0) else shares
+            dividends += cash
+
+        elif action == "split":
+            # shares field holds the split ratio (2.0 = 2-for-1).
+            if shares > 0 and lots:
+                for lot in lots:
+                    lot[0] *= shares
+                    lot[1] /= shares
+
+        # 'transfer' leaves the position alone
+
+    shares_held = sum(l[0] for l in lots)
+    unrealized_value = shares_held * end_price if (end_price is not None) else 0.0
+
+    # Total P&L treatment:
+    #   realized (cumulative buy → sell pairs)
+    # + unrealized (current shares × end-of-window price − remaining cost basis)
+    # + dividends
+    remaining_cost = sum(l[0] * l[1] for l in lots)
+    unrealized = unrealized_value - remaining_cost if end_price is not None else 0.0
+    total_pnl = realized + unrealized + dividends
+
+    total_return = (total_pnl / cost_basis * 100.0) if cost_basis > 0 else None
+    actual_alpha: Optional[float] = None
+    if total_return is not None and benchmark_return_pct is not None:
+        actual_alpha = total_return - benchmark_return_pct
+
+    return ActualPnL(
+        trade_count=len(trades),
+        shares_bought=round(shares_bought, 4),
+        shares_sold=round(shares_sold, 4),
+        shares_held_end=round(shares_held, 4),
+        cost_basis=round(cost_basis, 2),
+        proceeds=round(proceeds, 2),
+        dividends=round(dividends, 2),
+        unrealized_value_end=round(unrealized_value, 2),
+        realized_pnl=round(realized, 2),
+        total_pnl=round(total_pnl, 2),
+        total_return_pct=round(total_return, 2) if total_return is not None else None,
+        actual_alpha_pct=round(actual_alpha, 2) if actual_alpha is not None else None,
+        end_price=round(end_price, 2) if end_price is not None else None,
+        notes=None if end_price is not None else "end-of-window price unavailable; unrealized excluded",
+    )
+
+
+def _compute(run_row: Dict[str, Any], force: bool = False,
+              include_actual: bool = False) -> BacktestResult:
+    """Compute (or load cached) per-window returns for a single run.
+
+    ``include_actual=True`` additionally walks the trade_journal entries
+    linked to this run and computes the actual realized + unrealized
+    P&L. Result is anchored to the +30d window's end date — that's
+    the canonical "did the recommendation work" horizon.
+    """
     archive_path = run_row.get("log_path") or ""
     cache_path = _cache_path(archive_path)
+    cached_result: Optional[BacktestResult] = None
     if cache_path and cache_path.exists() and not force:
         try:
             cached = json.loads(cache_path.read_text(encoding="utf-8"))
-            return BacktestResult(**cached)
+            cached_result = BacktestResult(**cached)
         except Exception:
             pass
+
+    if cached_result and not include_actual:
+        # Cached result is sufficient when caller doesn't need fresh
+        # actual P&L (which depends on user trades that may have been
+        # added after the cache was written).
+        return cached_result
 
     ticker = run_row["ticker"]
     try:
@@ -193,40 +367,73 @@ def _compute(run_row: Dict[str, Any], force: bool = False) -> BacktestResult:
     except (TypeError, ValueError):
         raise HTTPException(status_code=400, detail=f"invalid trade_date {run_row.get('trade_date')!r}")
 
-    returns = _fetch_returns(ticker, trade_date)
-    decision = run_row.get("decision")
+    if cached_result is not None:
+        # Reuse the cached window math; we only need to compute the
+        # actual side fresh.
+        windows = cached_result.windows
+    else:
+        returns = _fetch_returns(ticker, trade_date)
+        decision = run_row.get("decision")
+        windows = []
+        for days in WINDOWS_DAYS:
+            r = returns.get(days, {})
+            tr = r.get("ticker_return_pct")
+            br = r.get("benchmark_return_pct")
+            alpha = (tr - br) if (tr is not None and br is not None) else None
+            win = _classify_win(decision, tr)
+            windows.append(BacktestWindow(
+                days=days,
+                end_date=r.get("end_date"),
+                ticker_return_pct=tr,
+                benchmark_return_pct=br,
+                alpha_pct=round(alpha, 2) if alpha is not None else None,
+                horizon_reached=r.get("horizon_reached", False),
+                win=win,
+            ))
 
-    windows: List[BacktestWindow] = []
-    for days in WINDOWS_DAYS:
-        r = returns.get(days, {})
-        tr = r.get("ticker_return_pct")
-        br = r.get("benchmark_return_pct")
-        alpha = (tr - br) if (tr is not None and br is not None) else None
-        win = _classify_win(decision, tr)
-        windows.append(BacktestWindow(
-            days=days,
-            end_date=r.get("end_date"),
-            ticker_return_pct=tr,
-            benchmark_return_pct=br,
-            alpha_pct=round(alpha, 2) if alpha is not None else None,
-            horizon_reached=r.get("horizon_reached", False),
-            win=win,
-        ))
+    actual: Optional[ActualPnL] = None
+    if include_actual:
+        # Anchor the actual-P&L window to +30d (the canonical comparison
+        # horizon). Caller can re-ask with a different window if needed
+        # later; we keep the API simple for now.
+        w30 = next((w for w in windows if w.days == 30), None)
+        end_date = None
+        bench_pct: Optional[float] = None
+        if w30 and w30.end_date:
+            try:
+                end_date = datetime.fromisoformat(w30.end_date).date()
+            except (TypeError, ValueError):
+                end_date = None
+            bench_pct = w30.benchmark_return_pct
+        try:
+            actual = _compute_actual(run_row["run_id"], ticker, trade_date, end_date, bench_pct)
+        except Exception as e:
+            logger.warning(f"actual P&L compute failed for {run_row['run_id']}: {e}")
 
     result = BacktestResult(
         run_id=run_row["run_id"],
         ticker=ticker,
         trade_date=run_row["trade_date"],
-        decision=decision,
+        decision=run_row.get("decision"),
         provider=run_row.get("provider"),
         deep_model=run_row.get("deep_model"),
         windows=windows,
+        actual=actual,
         computed_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
     )
 
-    if cache_path:
+    # Only cache the notional half (windows). actual depends on
+    # mutable trade_journal entries and must always be recomputed.
+    if cache_path and cached_result is None:
         try:
-            cache_path.write_text(result.model_dump_json(indent=2), encoding="utf-8")
+            to_cache = BacktestResult(
+                run_id=result.run_id, ticker=result.ticker,
+                trade_date=result.trade_date, decision=result.decision,
+                provider=result.provider, deep_model=result.deep_model,
+                benchmark=result.benchmark, windows=result.windows,
+                actual=None, computed_at=result.computed_at,
+            )
+            cache_path.write_text(to_cache.model_dump_json(indent=2), encoding="utf-8")
         except OSError as e:
             logger.warning(f"backtest cache write failed: {e}")
 
@@ -313,14 +520,114 @@ def attribution(
     return AttributionResponse(window_days=window_days, rows=out_rows)
 
 
+# ---------------------------------------------------------------------------
+# Actual-vs-notional aggregate — only runs that the user has actually traded.
+# Declared BEFORE /{run_id} (FastAPI evaluates routes in declaration order
+# and would otherwise match "actual-vs-notional" as a run_id parameter).
+# ---------------------------------------------------------------------------
+
+class ActualVsNotionalRow(BaseModel):
+    run_id: str
+    ticker: str
+    trade_date: str
+    decision: Optional[str] = None
+    notional_return_pct: Optional[float] = None      # at +30d, the framework's notional
+    notional_alpha_pct: Optional[float] = None       # vs SPY at +30d
+    actual_return_pct: Optional[float] = None        # what the user's trades actually returned
+    actual_alpha_pct: Optional[float] = None         # actual return vs SPY at +30d
+    actual_minus_notional_pct: Optional[float] = None  # behaviour gap (positive = you beat the framework)
+    trade_count: int = 0
+    cost_basis: float = 0.0
+    total_pnl: float = 0.0
+
+
+class ActualVsNotionalResponse(BaseModel):
+    window_days: int = 30
+    runs: List[ActualVsNotionalRow]
+    aggregate: Dict[str, Any]
+
+
+@router.get("/actual-vs-notional", response_model=ActualVsNotionalResponse)
+def actual_vs_notional(limit: int = Query(500, ge=10, le=2000)) -> ActualVsNotionalResponse:
+    """Compare what the framework predicted vs what your trades actually
+    realized, only for runs you actually traded against.
+
+    Implicitly anchored to the +30d window — that's where notional and
+    actual share a comparable end-of-window benchmark return for the
+    alpha math to line up.
+    """
+    rows = [r for r in storage.list_runs(limit=limit) if (r.get("status") or "").lower() == "done"]
+    out_rows: List[ActualVsNotionalRow] = []
+    total_actual_pnl = 0.0
+    total_cost_basis = 0.0
+    behaviour_gap_pcs: List[float] = []
+    you_beat_framework = 0
+
+    for r in rows:
+        try:
+            res = _compute(r, force=False, include_actual=True)
+        except Exception as e:
+            logger.warning(f"actual-vs-notional skipped {r.get('run_id')}: {e}")
+            continue
+        if res.actual is None or (res.actual.trade_count or 0) == 0:
+            continue
+        w30 = next((w for w in res.windows if w.days == 30), None)
+        notional = w30.ticker_return_pct if w30 else None
+        notional_alpha = w30.alpha_pct if w30 else None
+        actual = res.actual.total_return_pct
+        actual_alpha = res.actual.actual_alpha_pct
+        gap = None
+        if actual is not None and notional is not None:
+            gap = actual - notional
+            behaviour_gap_pcs.append(gap)
+            if gap > 0:
+                you_beat_framework += 1
+        out_rows.append(ActualVsNotionalRow(
+            run_id=res.run_id, ticker=res.ticker,
+            trade_date=res.trade_date, decision=res.decision,
+            notional_return_pct=notional,
+            notional_alpha_pct=notional_alpha,
+            actual_return_pct=actual,
+            actual_alpha_pct=actual_alpha,
+            actual_minus_notional_pct=round(gap, 2) if gap is not None else None,
+            trade_count=res.actual.trade_count,
+            cost_basis=res.actual.cost_basis,
+            total_pnl=res.actual.total_pnl,
+        ))
+        total_actual_pnl += res.actual.total_pnl
+        total_cost_basis += res.actual.cost_basis
+
+    out_rows.sort(key=lambda r: -(r.actual_minus_notional_pct or -9999))
+    mean_gap = (sum(behaviour_gap_pcs) / len(behaviour_gap_pcs)) if behaviour_gap_pcs else None
+    blended_return = (total_actual_pnl / total_cost_basis * 100.0) if total_cost_basis else None
+
+    aggregate: Dict[str, Any] = {
+        "runs_with_actual_trades": len(out_rows),
+        "you_beat_framework": you_beat_framework,
+        "mean_behaviour_gap_pct": round(mean_gap, 2) if mean_gap is not None else None,
+        "total_cost_basis": round(total_cost_basis, 2),
+        "total_realized_plus_unrealized_pnl": round(total_actual_pnl, 2),
+        "blended_actual_return_pct": round(blended_return, 2) if blended_return is not None else None,
+    }
+    return ActualVsNotionalResponse(window_days=30, runs=out_rows, aggregate=aggregate)
+
+
 @router.get("/{run_id}", response_model=BacktestResult)
-def get_backtest(run_id: str, force: bool = Query(False)) -> BacktestResult:
+def get_backtest(
+    run_id: str,
+    force: bool = Query(False),
+    include_actual: bool = Query(
+        False,
+        description="Also compute realized + unrealized P&L from trade_journal "
+                    "entries linked to this run via linked_run_id.",
+    ),
+) -> BacktestResult:
     row = storage.get_run(run_id)
     if not row:
         raise HTTPException(status_code=404, detail="run not found")
     if (row.get("status") or "").lower() != "done":
         raise HTTPException(status_code=409, detail="run is not done")
-    return _compute(row, force=force)
+    return _compute(row, force=force, include_actual=include_actual)
 
 
 class HitRateCell(BaseModel):

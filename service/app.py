@@ -31,6 +31,7 @@ from service.routers import (
     discover as discover_router,
     exports,
     health,
+    holders as holders_router,
     memory,
     news_alerts as news_alerts_router,
     news_feed,
@@ -126,6 +127,11 @@ async def _startup() -> None:
     # for watchlist + positions, scores impact, persists new items.
     from service import news_alerts_poller
     loop.create_task(news_alerts_poller.run(interval_seconds=900))
+    # 13F holdings poller — refreshes the smart-money-manager filings
+    # from SEC EDGAR once a week. Initial delay 60 min so app boot is
+    # snappy; 13F data is days-stale anyway.
+    from service import holdings_13f_poller
+    loop.create_task(holdings_13f_poller.run(interval_seconds=7 * 24 * 3600))
     logger.info("TradingAgents API ready. CORS origins: %s", _allowed_origins())
 
 
@@ -165,6 +171,7 @@ app.include_router(backtest_router.router)
 app.include_router(risk_router.router)
 app.include_router(trades_router.router)
 app.include_router(news_alerts_router.router)
+app.include_router(holders_router.router)
 
 
 def main() -> int:

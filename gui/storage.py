@@ -229,6 +229,53 @@ def init_db() -> None:
             );
             CREATE INDEX IF NOT EXISTS run_queue_status ON run_queue(status, priority DESC, created_at);
             CREATE INDEX IF NOT EXISTS run_queue_ticker ON run_queue(ticker);
+
+            -- Smart-money managers: institutional managers whose 13F-HR
+            -- filings we track for the /holders view. Seeded on first
+            -- init with the curated list from edgar_client.SMART_MONEY_SEEDS
+            -- (Berkshire, Burry's Scion, Klarman/Baupost, Ackman/Pershing,
+            -- etc.). User can disable any row to skip it on the next poll.
+            CREATE TABLE IF NOT EXISTS smart_money_managers (
+                cik TEXT PRIMARY KEY,         -- 10-digit zero-padded CIK
+                name TEXT NOT NULL,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                last_refreshed_at TEXT,
+                last_filing_date TEXT,        -- date of latest 13F successfully fetched
+                last_report_date TEXT,        -- the report period the filing covers
+                last_accession_no TEXT,
+                total_value REAL,             -- sum of position values, USD
+                position_count INTEGER,
+                last_error TEXT,
+                created_at TEXT NOT NULL
+            );
+
+            -- 13F holdings: one row per (manager, filing, position). The
+            -- (manager_cik, accession_no, cusip) tuple is unique. When
+            -- a fresh filing lands, the poller inserts the new
+            -- snapshot AND looks up the prior filing to compute
+            -- qoq_change_pct so the UI can highlight new buys / dumps.
+            CREATE TABLE IF NOT EXISTS holdings_13f (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                manager_cik TEXT NOT NULL,
+                manager_name TEXT NOT NULL,
+                accession_no TEXT NOT NULL,
+                filing_date TEXT NOT NULL,    -- YYYY-MM-DD when filing was submitted
+                report_date TEXT NOT NULL,    -- YYYY-MM-DD end-of-quarter the filing reports
+                cusip TEXT NOT NULL,
+                ticker TEXT,                  -- mapped via edgar_client.CUSIP_TO_TICKER (NULL = unmapped)
+                name_of_issuer TEXT,
+                title_of_class TEXT,
+                shares INTEGER NOT NULL,
+                value REAL NOT NULL,          -- USD position value at report_date
+                put_call TEXT,                -- 'Put' | 'Call' | NULL (long stock)
+                prev_shares INTEGER,          -- shares in the prior quarter's filing
+                qoq_change_pct REAL,          -- (shares - prev_shares) / prev_shares * 100; NULL = new position
+                pct_of_manager_aum REAL,      -- this position's value / manager's total AUM, percent
+                created_at TEXT NOT NULL,
+                UNIQUE(manager_cik, accession_no, cusip)
+            );
+            CREATE INDEX IF NOT EXISTS holdings_13f_ticker ON holdings_13f(ticker, report_date DESC);
+            CREATE INDEX IF NOT EXISTS holdings_13f_manager ON holdings_13f(manager_cik, report_date DESC);
             """
         )
         # Lazy column add — older DBs created before batch support.
@@ -249,6 +296,33 @@ def init_db() -> None:
             try:
                 c.execute(stmt)
             except Exception:
+                pass
+
+        # Seed the smart-money manager list on first init. If the table
+        # is empty, insert the curated names from edgar_client.
+        # SMART_MONEY_SEEDS. Subsequent inits are no-ops — the user can
+        # disable rows or add new managers via the API without re-seeding.
+        try:
+            existing = c.execute("SELECT COUNT(*) FROM smart_money_managers").fetchone()[0]
+        except Exception:
+            existing = 0
+        if not existing:
+            try:
+                from service.edgar_client import SMART_MONEY_SEEDS  # local import to avoid circular
+                now = _now()
+                for cik, name in SMART_MONEY_SEEDS:
+                    try:
+                        c.execute(
+                            """INSERT OR IGNORE INTO smart_money_managers
+                               (cik, name, enabled, created_at) VALUES (?, ?, 1, ?)""",
+                            (cik, name, now),
+                        )
+                    except Exception:
+                        continue
+            except Exception:
+                # service module may not be importable in some contexts (e.g.
+                # a tooling script run before the API package is on the path).
+                # Seeding will happen on the first API boot, which is fine.
                 pass
 
 
@@ -1339,3 +1413,306 @@ def mark_run_running(run_id: str) -> None:
             "UPDATE runs SET status='running', started_at=? WHERE run_id=?",
             (_now(), run_id),
         )
+
+
+# ---------------------------------------------------------------------------
+# 13F institutional holdings — smart-money managers + their positions
+# ---------------------------------------------------------------------------
+
+def list_smart_money_managers(*, enabled_only: bool = False) -> List[Dict[str, Any]]:
+    sql = "SELECT * FROM smart_money_managers"
+    if enabled_only:
+        sql += " WHERE enabled=1"
+    sql += " ORDER BY name"
+    with _conn() as c:
+        return [dict(r) for r in c.execute(sql).fetchall()]
+
+
+def upsert_smart_money_manager(*, cik: str, name: str,
+                                enabled: bool = True) -> Dict[str, Any]:
+    """Insert a new manager or update the name/enabled flag on an existing
+    row. The CIK is the primary key — passing an existing one
+    overwrites name + enabled without touching the latest filing pointers."""
+    now = _now()
+    cik_p = str(cik).lstrip("0").zfill(10)
+    with _conn() as c:
+        c.execute(
+            """INSERT INTO smart_money_managers(cik, name, enabled, created_at)
+               VALUES (?, ?, ?, ?)
+               ON CONFLICT(cik) DO UPDATE SET
+                 name=excluded.name, enabled=excluded.enabled""",
+            (cik_p, name, 1 if enabled else 0, now),
+        )
+        row = c.execute(
+            "SELECT * FROM smart_money_managers WHERE cik=?", (cik_p,)
+        ).fetchone()
+        return dict(row)
+
+
+def set_smart_money_manager_enabled(cik: str, enabled: bool) -> bool:
+    cik_p = str(cik).lstrip("0").zfill(10)
+    with _conn() as c:
+        cur = c.execute(
+            "UPDATE smart_money_managers SET enabled=? WHERE cik=?",
+            (1 if enabled else 0, cik_p),
+        )
+        return cur.rowcount > 0
+
+
+def update_manager_after_fetch(*, cik: str, filing_date: Optional[str],
+                                report_date: Optional[str],
+                                accession_no: Optional[str],
+                                total_value: Optional[float],
+                                position_count: Optional[int],
+                                error: Optional[str] = None) -> None:
+    """Record the result of a poll cycle. Called by the 13F poller after
+    each manager's filing is fetched (or after a failure). ``error`` is
+    set when fetch/parse fails; the other fields are cleared in that
+    case so the next poll retries cleanly."""
+    cik_p = str(cik).lstrip("0").zfill(10)
+    now = _now()
+    with _conn() as c:
+        c.execute(
+            """UPDATE smart_money_managers
+               SET last_refreshed_at=?, last_filing_date=COALESCE(?, last_filing_date),
+                   last_report_date=COALESCE(?, last_report_date),
+                   last_accession_no=COALESCE(?, last_accession_no),
+                   total_value=COALESCE(?, total_value),
+                   position_count=COALESCE(?, position_count),
+                   last_error=?
+               WHERE cik=?""",
+            (now, filing_date, report_date, accession_no,
+             total_value, position_count, error, cik_p),
+        )
+
+
+def list_holdings_by_ticker(ticker: str, *, limit: int = 100) -> List[Dict[str, Any]]:
+    """All smart-money positions in a single ticker.
+
+    Joins to smart_money_managers so the UI gets the manager name +
+    AUM context without a second query. Only returns the LATEST
+    filing per manager — historical snapshots are still in the table
+    but the per-ticker view is intentionally "who holds this NOW".
+    """
+    sql = """
+        SELECT h.*, m.name as manager_name_current,
+               m.total_value as manager_total_value
+        FROM holdings_13f h
+        JOIN smart_money_managers m ON m.cik = h.manager_cik
+        WHERE h.ticker = ?
+          AND h.accession_no = m.last_accession_no
+          AND m.enabled = 1
+        ORDER BY h.value DESC
+        LIMIT ?
+    """
+    with _conn() as c:
+        return [dict(r) for r in c.execute(sql, (ticker.strip().upper(), limit)).fetchall()]
+
+
+def list_holdings_by_manager(cik: str, *, accession_no: Optional[str] = None,
+                              limit: int = 200) -> List[Dict[str, Any]]:
+    """All positions in a manager's latest filing (or a specific one)."""
+    cik_p = str(cik).lstrip("0").zfill(10)
+    if accession_no:
+        sql = """SELECT * FROM holdings_13f
+                 WHERE manager_cik=? AND accession_no=?
+                 ORDER BY value DESC LIMIT ?"""
+        args: tuple = (cik_p, accession_no, limit)
+    else:
+        # Latest accession for this manager.
+        sql = """SELECT h.* FROM holdings_13f h
+                 JOIN smart_money_managers m ON m.cik = h.manager_cik
+                 WHERE h.manager_cik=? AND h.accession_no = m.last_accession_no
+                 ORDER BY h.value DESC LIMIT ?"""
+        args = (cik_p, limit)
+    with _conn() as c:
+        return [dict(r) for r in c.execute(sql, args).fetchall()]
+
+
+def prior_filing_for_manager(cik: str,
+                              before_accession: str) -> Optional[Dict[str, Any]]:
+    """Return any one row from the manager's filing BEFORE ``before_accession``
+    so the poller can pull prev_shares for QoQ comparison. Picks the row
+    with the most recent report_date strictly older than the current one."""
+    cik_p = str(cik).lstrip("0").zfill(10)
+    with _conn() as c:
+        # Look up the report_date of the current filing first.
+        cur_row = c.execute(
+            """SELECT report_date FROM holdings_13f
+               WHERE manager_cik=? AND accession_no=? LIMIT 1""",
+            (cik_p, before_accession),
+        ).fetchone()
+        if not cur_row:
+            return None
+        cur_report = cur_row["report_date"]
+        prior = c.execute(
+            """SELECT accession_no, report_date FROM holdings_13f
+               WHERE manager_cik=? AND report_date < ?
+               ORDER BY report_date DESC LIMIT 1""",
+            (cik_p, cur_report),
+        ).fetchone()
+        return dict(prior) if prior else None
+
+
+def get_prev_position_shares(cik: str, accession_no: str,
+                              cusip: str) -> Optional[int]:
+    """How many shares of CUSIP did this manager hold in the named filing?"""
+    cik_p = str(cik).lstrip("0").zfill(10)
+    with _conn() as c:
+        row = c.execute(
+            """SELECT shares FROM holdings_13f
+               WHERE manager_cik=? AND accession_no=? AND cusip=? LIMIT 1""",
+            (cik_p, accession_no, cusip.upper()),
+        ).fetchone()
+        return int(row["shares"]) if row else None
+
+
+def insert_holdings_snapshot(*, manager_cik: str, manager_name: str,
+                              accession_no: str, filing_date: str,
+                              report_date: str,
+                              holdings: List[Dict[str, Any]]) -> int:
+    """Bulk insert one filing's worth of holdings. Computes prev_shares
+    and qoq_change_pct against the prior filing (if any) per row.
+    Returns the count of rows inserted (rows that conflict on
+    (manager_cik, accession_no, cusip) are skipped silently)."""
+    cik_p = str(manager_cik).lstrip("0").zfill(10)
+    now = _now()
+    inserted = 0
+    prior = prior_filing_for_manager(cik_p, accession_no)
+    prior_acc = prior["accession_no"] if prior else None
+
+    # Compute total AUM first so we can store pct_of_manager_aum per row.
+    total_aum = float(sum(h.get("value") or 0 for h in holdings)) or 1.0
+
+    with _conn() as c:
+        for h in holdings:
+            cusip = (h.get("cusip") or "").upper()
+            if not cusip:
+                continue
+            value = float(h.get("value") or 0)
+            shares = int(h.get("shares") or 0)
+            pct = (value / total_aum * 100.0) if total_aum else None
+
+            prev_shares: Optional[int] = None
+            qoq: Optional[float] = None
+            if prior_acc:
+                prev = c.execute(
+                    """SELECT shares FROM holdings_13f
+                       WHERE manager_cik=? AND accession_no=? AND cusip=? LIMIT 1""",
+                    (cik_p, prior_acc, cusip),
+                ).fetchone()
+                if prev:
+                    prev_shares = int(prev["shares"])
+                    if prev_shares > 0:
+                        qoq = (shares - prev_shares) / prev_shares * 100.0
+
+            try:
+                c.execute(
+                    """INSERT OR IGNORE INTO holdings_13f
+                       (manager_cik, manager_name, accession_no, filing_date,
+                        report_date, cusip, ticker, name_of_issuer,
+                        title_of_class, shares, value, put_call,
+                        prev_shares, qoq_change_pct, pct_of_manager_aum,
+                        created_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (cik_p, manager_name, accession_no, filing_date, report_date,
+                     cusip, h.get("ticker"), h.get("name_of_issuer"),
+                     h.get("title_of_class"), shares, value, h.get("put_call"),
+                     prev_shares,
+                     round(qoq, 2) if qoq is not None else None,
+                     round(pct, 4) if pct is not None else None,
+                     now),
+                )
+                inserted += c.total_changes  # not exact but reasonable signal
+            except Exception:
+                continue
+
+    # Tighten "inserted" — re-count by querying back.
+    with _conn() as c:
+        cnt = c.execute(
+            """SELECT COUNT(*) FROM holdings_13f
+               WHERE manager_cik=? AND accession_no=?""",
+            (cik_p, accession_no),
+        ).fetchone()[0]
+    return int(cnt)
+
+
+def smart_money_summary_for_ticker(ticker: str) -> Dict[str, Any]:
+    """One-row summary card for "smart money owning $TICKER".
+
+    Returns: total managers holding, combined value, top 3 by value,
+    newest-quarter QoQ aggregate change (new buys + adds vs trims/exits).
+    Useful for a dashboard widget."""
+    rows = list_holdings_by_ticker(ticker, limit=200)
+    if not rows:
+        return {
+            "ticker": ticker.upper(), "manager_count": 0,
+            "total_value": 0, "total_shares": 0,
+            "top_managers": [], "new_buys": 0, "exits": 0,
+            "net_share_change_pct": None,
+        }
+    total_value = sum(r.get("value") or 0 for r in rows)
+    total_shares = sum(r.get("shares") or 0 for r in rows)
+    new_buys = sum(1 for r in rows if r.get("prev_shares") is None)
+    # An "exit" is when prev_shares > 0 but shares == 0 — but our list
+    # already filters to LATEST filings which contain the current
+    # position. True exits aren't in this table. Approximate with
+    # "shares dropped 50%+" since this snapshot.
+    big_trims = sum(
+        1 for r in rows
+        if (r.get("qoq_change_pct") is not None and r["qoq_change_pct"] <= -50)
+    )
+    # Weighted share-change: sum of (current - prev) weighted by value.
+    deltas = [
+        ((r.get("shares") or 0) - (r.get("prev_shares") or 0)) for r in rows
+        if r.get("prev_shares") is not None and r.get("prev_shares", 0) > 0
+    ]
+    base = [r.get("prev_shares") or 0 for r in rows if r.get("prev_shares") is not None and r.get("prev_shares", 0) > 0]
+    net_pct = (sum(deltas) / sum(base) * 100.0) if base else None
+
+    top = sorted(rows, key=lambda r: -(r.get("value") or 0))[:3]
+    return {
+        "ticker": ticker.upper(),
+        "manager_count": len(rows),
+        "total_value": round(total_value, 2),
+        "total_shares": total_shares,
+        "top_managers": [
+            {"name": r.get("manager_name"), "value": round(r.get("value") or 0, 2),
+             "shares": r.get("shares"), "qoq_change_pct": r.get("qoq_change_pct")}
+            for r in top
+        ],
+        "new_buys": new_buys,
+        "large_trims": big_trims,
+        "net_share_change_pct": round(net_pct, 2) if net_pct is not None else None,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Trade-journal lookups for backtest "actual vs notional" comparison
+# ---------------------------------------------------------------------------
+
+def trades_for_run(run_id: str) -> List[Dict[str, Any]]:
+    """Every trade the user has linked to this recommendation run via
+    ``linked_run_id``. Ordered chronologically so the backtest can walk
+    them as a FIFO cost-basis layer."""
+    with _conn() as c:
+        return [dict(r) for r in c.execute(
+            """SELECT * FROM trade_journal
+               WHERE linked_run_id=?
+               ORDER BY executed_at ASC, id ASC""",
+            (run_id,),
+        ).fetchall()]
+
+
+def trades_for_ticker_in_window(ticker: str, *, start_date: str,
+                                 end_date: str) -> List[Dict[str, Any]]:
+    """All trades for ``ticker`` with executed_at in [start, end].
+    Used when a run isn't directly linked but you want to attribute
+    trades that happened in the run's window."""
+    with _conn() as c:
+        return [dict(r) for r in c.execute(
+            """SELECT * FROM trade_journal
+               WHERE ticker=? AND executed_at >= ? AND executed_at <= ?
+               ORDER BY executed_at ASC, id ASC""",
+            (ticker.strip().upper(), start_date, end_date),
+        ).fetchall()]

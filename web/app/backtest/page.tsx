@@ -3,7 +3,12 @@
 import Link from "next/link";
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Backtest, type HitRateCell, type TickerAttributionRow } from "@/lib/api";
+import {
+  Backtest,
+  type HitRateCell,
+  type TickerAttributionRow,
+  type ActualVsNotionalRow,
+} from "@/lib/api";
 import { decisionColor } from "@/lib/format";
 
 const WINDOWS = [
@@ -149,6 +154,9 @@ export default function BacktestPage() {
 
       {/* Per-ticker attribution */}
       <AttributionSection windowDays={windowDays} />
+
+      {/* Actual vs notional — uses trade_journal entries linked via linked_run_id */}
+      <ActualVsNotionalSection />
 
       {/* Per-run sample */}
       <section>
@@ -349,5 +357,153 @@ function HitRateTable({ rows, windowDays }: { rows: HitRateCell[]; windowDays: n
         </tbody>
       </table>
     </div>
+  );
+}
+
+
+// ──────────────────────────────────────────────────────────────────────
+// Actual vs notional — what you actually realized from your own trades
+// compared to what the framework's notional buy-at-recommendation
+// projected. Only shows runs that you have linked trade_journal entries
+// for (via linked_run_id). If empty, the user just hasn't logged any
+// trades against runs yet.
+// ──────────────────────────────────────────────────────────────────────
+
+function ActualVsNotionalSection() {
+  const q = useQuery({
+    queryKey: ["backtest-actual-vs-notional"],
+    queryFn: () => Backtest.actualVsNotional(),
+    refetchOnWindowFocus: false,
+  });
+
+  if (q.isLoading) {
+    return (
+      <section>
+        <h2 className="text-lg font-semibold mb-3">Actual vs notional</h2>
+        <div className="card text-sm text-muted">
+          Loading… (this walks every run's linked trades through FIFO
+          cost-basis math; first load can take a few seconds)
+        </div>
+      </section>
+    );
+  }
+  if (!q.data || q.data.runs.length === 0) {
+    return (
+      <section>
+        <h2 className="text-lg font-semibold mb-3">Actual vs notional</h2>
+        <div className="card text-sm text-muted">
+          No runs have linked trades yet. To populate this view, log a
+          trade at <Link href="/trades" className="text-accent hover:underline">/trades</Link>
+          {" "}and set <code>linked_run_id</code> to a recommendation run
+          you traded on. Then the framework's notional buy-at-trade-date
+          return gets compared against what your actual trades realized.
+        </div>
+      </section>
+    );
+  }
+
+  const a = q.data.aggregate;
+  const blendedTone =
+    a.blended_actual_return_pct === null
+      ? "text-muted"
+      : a.blended_actual_return_pct > 0
+        ? "text-success"
+        : "text-danger";
+  const gapTone =
+    a.mean_behaviour_gap_pct === null
+      ? "text-muted"
+      : a.mean_behaviour_gap_pct > 0
+        ? "text-success"
+        : "text-danger";
+
+  return (
+    <section>
+      <h2 className="text-lg font-semibold mb-3">Actual vs notional</h2>
+      <p className="text-muted text-xs mb-3">
+        For each run you logged a trade against (via{" "}
+        <code>linked_run_id</code> in <Link href="/trades" className="text-accent hover:underline">/trades</Link>),
+        we compute: (a) the framework's <em>notional</em> return (buy at
+        recommendation, hold for +30d) and (b) your <em>actual</em>{" "}
+        realized + unrealized return using FIFO cost-basis math through
+        the same end-of-window date. Positive behaviour gap = you beat
+        the framework by sizing or timing.
+      </p>
+
+      <div className="card grid grid-cols-2 md:grid-cols-4 gap-4 mb-3">
+        <ScoreboardCell
+          label="Runs traded"
+          value={String(a.runs_with_actual_trades)}
+          sub={`${a.you_beat_framework} beat the framework`}
+        />
+        <ScoreboardCell
+          label="Mean behaviour gap"
+          value={fmtPct(a.mean_behaviour_gap_pct)}
+          tone={gapTone}
+          sub="actual − notional, averaged"
+        />
+        <ScoreboardCell
+          label="Blended actual return"
+          value={fmtPct(a.blended_actual_return_pct)}
+          tone={blendedTone}
+          sub={`$${a.total_realized_plus_unrealized_pnl.toLocaleString()} P&L on $${a.total_cost_basis.toLocaleString()} basis`}
+        />
+        <ScoreboardCell
+          label="Total trades capital"
+          value={`$${(a.total_cost_basis / 1000).toFixed(1)}K`}
+          sub="cost basis deployed"
+        />
+      </div>
+
+      <div className="card overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead className="text-left text-xs uppercase tracking-wider text-muted">
+            <tr>
+              <th className="py-2">Run</th>
+              <th>Ticker</th>
+              <th>Decision</th>
+              <th className="text-right">Trades</th>
+              <th className="text-right">Cost basis</th>
+              <th className="text-right">Notional</th>
+              <th className="text-right">Actual</th>
+              <th className="text-right">Gap</th>
+              <th className="text-right">Actual α</th>
+            </tr>
+          </thead>
+          <tbody>
+            {q.data.runs.map((r: ActualVsNotionalRow) => (
+              <tr key={r.run_id} className="border-t border-border">
+                <td className="py-2">
+                  <Link href={`/history/${r.run_id}`} className="text-accent hover:underline">
+                    {r.run_id.slice(0, 8)}…
+                  </Link>
+                </td>
+                <td className="font-semibold">{r.ticker}</td>
+                <td>
+                  {r.decision ? (
+                    <span className={`text-sm font-semibold ${decisionColor(r.decision)}`}>
+                      {r.decision}
+                    </span>
+                  ) : <span className="text-muted">—</span>}
+                </td>
+                <td className="text-right tabular-nums">{r.trade_count}</td>
+                <td className="text-right tabular-nums">${r.cost_basis.toLocaleString()}</td>
+                <td className={`text-right tabular-nums ${(r.notional_return_pct ?? 0) >= 0 ? "text-success" : "text-danger"}`}>
+                  {fmtPct(r.notional_return_pct)}
+                </td>
+                <td className={`text-right tabular-nums ${(r.actual_return_pct ?? 0) >= 0 ? "text-success" : "text-danger"}`}>
+                  {fmtPct(r.actual_return_pct)}
+                </td>
+                <td className={`text-right tabular-nums font-semibold ${(r.actual_minus_notional_pct ?? 0) > 0 ? "text-success" : (r.actual_minus_notional_pct ?? 0) < 0 ? "text-danger" : "text-muted"}`}>
+                  {fmtPct(r.actual_minus_notional_pct)}
+                </td>
+                <td className={`text-right tabular-nums ${(r.actual_alpha_pct ?? 0) > 0 ? "text-success" : (r.actual_alpha_pct ?? 0) < 0 ? "text-danger" : "text-muted"}`}>
+                  {fmtPct(r.actual_alpha_pct)}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </section>
   );
 }
