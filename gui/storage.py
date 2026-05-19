@@ -1648,7 +1648,7 @@ def smart_money_summary_for_ticker(ticker: str) -> Dict[str, Any]:
         return {
             "ticker": ticker.upper(), "manager_count": 0,
             "total_value": 0, "total_shares": 0,
-            "top_managers": [], "new_buys": 0, "exits": 0,
+            "top_managers": [], "new_buys": 0, "large_trims": 0,
             "net_share_change_pct": None,
         }
     total_value = sum(r.get("value") or 0 for r in rows)
