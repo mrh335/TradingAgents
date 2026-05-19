@@ -23,6 +23,23 @@ class Position(BaseModel):
     closing_price: Optional[float] = None
     account: Optional[str] = None
     notes: Optional[str] = None
+    next_earnings_date: Optional[str] = None
+    days_until_earnings: Optional[int] = None
+
+
+def _with_earnings(row: dict) -> dict:
+    """Attach next_earnings_date + days_until_earnings to a position row.
+    Uses the shared 15-min cache in storage._next_earnings_date so we
+    don't hit yfinance per request."""
+    from datetime import date as _date
+    out = dict(row)
+    try:
+        ne = storage._next_earnings_date(row["ticker"])
+    except Exception:
+        ne = None
+    out["next_earnings_date"] = ne.isoformat() if ne else None
+    out["days_until_earnings"] = (ne - _date.today()).days if ne else None
+    return out
 
 
 class PositionCreateRequest(BaseModel):
@@ -48,7 +65,8 @@ class PositionCloseRequest(BaseModel):
 
 @router.get("/positions", response_model=List[Position])
 def list_positions(include_closed: bool = False) -> List[Position]:
-    return [Position(**p) for p in storage.list_positions(include_closed=include_closed)]
+    return [Position(**_with_earnings(p))
+            for p in storage.list_positions(include_closed=include_closed)]
 
 
 @router.post("/positions", response_model=Position)

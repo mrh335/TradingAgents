@@ -37,6 +37,7 @@ const NAV = [
   { href: "/memory", label: "Memory" },
   { href: "/tokens", label: "Tokens" },
   { href: "/settings", label: "Settings" },
+  { href: "/references", label: "References" },
   { href: "/docs", label: "Help / Docs" },
 ];
 

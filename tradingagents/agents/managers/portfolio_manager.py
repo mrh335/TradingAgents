@@ -20,10 +20,6 @@ from tradingagents.agents.utils.structured import (
     invoke_structured_or_freetext,
 )
 from tradingagents.dataflows.portfolio_context import get_portfolio_context
-from tradingagents.dataflows.restrictions import (
-    get_trading_restrictions,
-    has_active_restriction,
-)
 
 
 def create_portfolio_manager(llm):
@@ -49,16 +45,14 @@ def create_portfolio_manager(llm):
         # Inject the user's current holdings so the PM sizes the
         # recommendation against actual exposure (add vs initiate, trim
         # vs fully exit, concentration risk).
+        #
+        # Note: trading restrictions are NOT injected here. They were
+        # previously a hard "you MUST choose Hold" override, which
+        # corrupted the market view — the user wants to know what the
+        # market is saying independent of whether they can act on it.
+        # Restrictions are now a UI-only overlay surfaced via /restrictions
+        # endpoints + the dashboard "trade status" badge.
         holdings_block = get_portfolio_context(ticker, include_full_portfolio=True)
-
-        # Inject any active trading restrictions for this ticker. If there
-        # are none, skip the section entirely to avoid prompt noise.
-        if has_active_restriction(ticker, trade_date):
-            restrictions_block = (
-                "\n---\n\n" + get_trading_restrictions(ticker, trade_date) + "\n"
-            )
-        else:
-            restrictions_block = ""
 
         prompt = f"""As the Portfolio Manager, synthesize the risk analysts' debate and deliver the final trading decision.
 
@@ -83,10 +77,9 @@ def create_portfolio_manager(llm):
 ---
 
 {holdings_block}
-{restrictions_block}
 ---
 
-Be decisive and ground every conclusion in specific evidence from the analysts. Size the recommendation against the user's existing exposure shown above. {('**IF A TRADING RESTRICTION IS ACTIVE, the final decision MUST be Hold (or a deferred-action note). This overrides any bullish or bearish signal.** ' if restrictions_block else '')}{get_language_instruction()}"""
+Be decisive and ground every conclusion in specific evidence from the analysts. Size the recommendation against the user's existing exposure shown above. {get_language_instruction()}"""
 
         final_trade_decision = invoke_structured_or_freetext(
             structured_llm,

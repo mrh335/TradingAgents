@@ -18,6 +18,8 @@ class WatchlistEntry(BaseModel):
     ticker: str
     added_at: str
     notes: Optional[str] = None
+    next_earnings_date: Optional[str] = None  # YYYY-MM-DD via yfinance cache
+    days_until_earnings: Optional[int] = None
 
 
 class WatchlistAddRequest(BaseModel):
@@ -25,9 +27,28 @@ class WatchlistAddRequest(BaseModel):
     notes: Optional[str] = None
 
 
+def _enrich_with_earnings(entry: dict) -> dict:
+    """Add next_earnings_date + days_until_earnings to a watchlist row,
+    using the shared 15-min cache so we don't hit yfinance per request."""
+    from datetime import date as _date
+    try:
+        ne = storage._next_earnings_date(entry["ticker"])
+    except Exception:
+        ne = None
+    out = dict(entry)
+    if ne is not None:
+        out["next_earnings_date"] = ne.isoformat()
+        out["days_until_earnings"] = (ne - _date.today()).days
+    else:
+        out["next_earnings_date"] = None
+        out["days_until_earnings"] = None
+    return out
+
+
 @router.get("", response_model=List[WatchlistEntry])
 def list_watchlist() -> List[WatchlistEntry]:
-    return [WatchlistEntry(**e) for e in storage.list_watchlist()]
+    return [WatchlistEntry(**_enrich_with_earnings(e))
+            for e in storage.list_watchlist()]
 
 
 @router.post("", response_model=WatchlistEntry)

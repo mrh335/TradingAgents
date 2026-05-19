@@ -140,6 +140,8 @@ export type WatchlistEntry = {
   ticker: string;
   added_at: string;
   notes?: string | null;
+  next_earnings_date?: string | null;
+  days_until_earnings?: number | null;
 };
 
 export type Position = {
@@ -152,6 +154,8 @@ export type Position = {
   closing_price?: number | null;
   account?: string | null;
   notes?: string | null;
+  next_earnings_date?: string | null;
+  days_until_earnings?: number | null;
 };
 
 export type PositionWithLive = Position & {

@@ -26,7 +26,11 @@ from gui import storage
 
 router = APIRouter(prefix="/restrictions", tags=["restrictions"])
 
-ALLOWED_KINDS = {"blackout", "restricted_list", "regulatory", "other", "earnings_blackout"}
+ALLOWED_KINDS = {
+    "blackout", "restricted_list", "regulatory", "other",
+    "earnings_blackout",  # closed N days before to M days after earnings
+    "earnings_window",    # OPEN from N days post-earnings, for M days
+}
 
 
 def _validate_iso_date(v: Optional[str]) -> Optional[str]:
@@ -48,14 +52,22 @@ class Restriction(BaseModel):
     reason: Optional[str] = None
     earnings_days_before: Optional[int] = None
     earnings_days_after: Optional[int] = None
+    earnings_window_open_offset_days: Optional[int] = None
+    earnings_window_duration_days: Optional[int] = None
     created_at: str
     updated_at: str
     # When the active_on filter is set and the row is an earnings-relative
-    # restriction, these surface the resolved window so the UI can show
-    # "active because earnings is on 2026-05-30, blackout opens 2026-05-16".
+    # restriction, these surface the resolved window:
+    # - earnings_blackout: resolved_start/end = the closed period
+    # - earnings_window:   resolved_start/end = the OPEN period (when
+    #                       trading is allowed)
     resolved_start: Optional[str] = None
     resolved_end: Optional[str] = None
     resolved_earnings_date: Optional[str] = None
+    # For earnings_window rows: is the window currently open? True means
+    # trading is allowed RIGHT NOW; False means we're in a closure
+    # between two open windows.
+    currently_open: Optional[bool] = None
 
 
 class RestrictionCreateRequest(BaseModel):
@@ -96,6 +108,24 @@ class RestrictionCreateRequest(BaseModel):
             "before re-opening the trading window)."
         ),
     )
+    earnings_window_open_offset_days: Optional[int] = Field(
+        default=None,
+        ge=0, le=30,
+        description=(
+            "For kind=earnings_window: how many days AFTER the next "
+            "earnings date the trading window OPENS. Typical: 1-3 days "
+            "of cooldown to let post-print volatility settle."
+        ),
+    )
+    earnings_window_duration_days: Optional[int] = Field(
+        default=None,
+        ge=1, le=120,
+        description=(
+            "For kind=earnings_window: how many days the open window "
+            "stays open before closing again until the next earnings. "
+            "Typical: 14-28 days (2-4 weeks of trading allowed)."
+        ),
+    )
 
     @field_validator("start_date")
     @classmethod
@@ -124,6 +154,8 @@ class RestrictionUpdateRequest(BaseModel):
     reason: Optional[str] = None
     earnings_days_before: Optional[int] = None
     earnings_days_after: Optional[int] = None
+    earnings_window_open_offset_days: Optional[int] = None
+    earnings_window_duration_days: Optional[int] = None
 
     @field_validator("start_date", "end_date")
     @classmethod
@@ -150,11 +182,14 @@ def _row(d: dict) -> Restriction:
         reason=d.get("reason"),
         earnings_days_before=d.get("earnings_days_before"),
         earnings_days_after=d.get("earnings_days_after"),
+        earnings_window_open_offset_days=d.get("earnings_window_open_offset_days"),
+        earnings_window_duration_days=d.get("earnings_window_duration_days"),
         created_at=d["created_at"],
         updated_at=d["updated_at"],
         resolved_start=d.get("_resolved_start"),
         resolved_end=d.get("_resolved_end"),
         resolved_earnings_date=d.get("_resolved_earnings_date"),
+        currently_open=d.get("_currently_open"),
     )
 
 
@@ -188,9 +223,11 @@ def create_restriction_endpoint(req: RestrictionCreateRequest) -> Restriction:
     # the dynamic window doesn't need a hard start. Store today as a
     # placeholder so the NOT NULL constraint passes.
     is_earnings = (
-        req.kind == "earnings_blackout"
+        req.kind in ("earnings_blackout", "earnings_window")
         or req.earnings_days_before is not None
         or req.earnings_days_after is not None
+        or req.earnings_window_open_offset_days is not None
+        or req.earnings_window_duration_days is not None
     )
     start_date = req.start_date or (date.today().isoformat() if is_earnings else "")
     if not start_date:
@@ -198,6 +235,14 @@ def create_restriction_endpoint(req: RestrictionCreateRequest) -> Restriction:
             status_code=400,
             detail="start_date is required for fixed-window restrictions",
         )
+    # For earnings_window, require both parameters or it's incoherent.
+    if req.kind == "earnings_window":
+        if req.earnings_window_duration_days is None:
+            raise HTTPException(
+                status_code=400,
+                detail="earnings_window requires earnings_window_duration_days "
+                       "(how long the open window stays open)",
+            )
     row = storage.add_restriction(
         ticker=req.ticker,
         start_date=start_date,
@@ -206,6 +251,8 @@ def create_restriction_endpoint(req: RestrictionCreateRequest) -> Restriction:
         reason=req.reason,
         earnings_days_before=req.earnings_days_before,
         earnings_days_after=req.earnings_days_after,
+        earnings_window_open_offset_days=req.earnings_window_open_offset_days,
+        earnings_window_duration_days=req.earnings_window_duration_days,
     )
     return _row(row)
 
@@ -225,6 +272,8 @@ def update_restriction_endpoint(
         reason=req.reason,
         earnings_days_before=req.earnings_days_before,
         earnings_days_after=req.earnings_days_after,
+        earnings_window_open_offset_days=req.earnings_window_open_offset_days,
+        earnings_window_duration_days=req.earnings_window_duration_days,
     )
     return _row(row)
 

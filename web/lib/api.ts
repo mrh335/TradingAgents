@@ -406,15 +406,33 @@ export type QueueItem = {
 
 // ---- Trading restrictions (per-ticker blackout windows) ----------------
 
+export type RestrictionKind =
+  | "blackout"
+  | "restricted_list"
+  | "regulatory"
+  | "other"
+  | "earnings_blackout"   // closed N days before, M days after each earnings
+  | "earnings_window";    // OPEN N days after earnings, for M days; closed otherwise
+
 export type Restriction = {
   id: number;
   ticker: string;
   start_date: string;
   end_date: string | null;
-  kind: "blackout" | "restricted_list" | "regulatory" | "other";
+  kind: RestrictionKind;
   reason: string | null;
+  earnings_days_before: number | null;
+  earnings_days_after: number | null;
+  earnings_window_open_offset_days: number | null;
+  earnings_window_duration_days: number | null;
   created_at: string;
   updated_at: string;
+  resolved_start: string | null;
+  resolved_end: string | null;
+  resolved_earnings_date: string | null;
+  // For earnings_window rows: true if active_on is INSIDE the open
+  // window (trading allowed); false/null when restricted.
+  currently_open: boolean | null;
 };
 
 export const Restrictions = {
@@ -427,10 +445,14 @@ export const Restrictions = {
   },
   create: (req: {
     ticker: string;
-    start_date: string;
+    start_date?: string;
     end_date?: string | null;
-    kind?: Restriction["kind"];
+    kind?: RestrictionKind;
     reason?: string | null;
+    earnings_days_before?: number | null;
+    earnings_days_after?: number | null;
+    earnings_window_open_offset_days?: number | null;
+    earnings_window_duration_days?: number | null;
   }) =>
     request<Restriction>("/restrictions", {
       method: "POST",
@@ -441,8 +463,12 @@ export const Restrictions = {
     req: Partial<{
       start_date: string;
       end_date: string | null;
-      kind: Restriction["kind"];
+      kind: RestrictionKind;
       reason: string | null;
+      earnings_days_before: number | null;
+      earnings_days_after: number | null;
+      earnings_window_open_offset_days: number | null;
+      earnings_window_duration_days: number | null;
     }>,
   ) =>
     request<Restriction>(`/restrictions/${id}`, {

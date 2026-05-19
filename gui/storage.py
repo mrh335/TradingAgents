@@ -292,6 +292,16 @@ def init_db() -> None:
         for stmt in (
             "ALTER TABLE trading_restrictions ADD COLUMN earnings_days_before INTEGER",
             "ALTER TABLE trading_restrictions ADD COLUMN earnings_days_after INTEGER",
+            # New columns for the earnings-RELATIVE-WINDOW (open) variant.
+            # earnings_window semantics:
+            #   open_offset_days: when the trading window OPENS, expressed
+            #     as days after the earnings date (typically 1-3 for a
+            #     post-earnings cooldown).
+            #   duration_days: how long the window stays open before closing
+            #     again until the next earnings call.
+            # Outside [open, open+duration], the ticker is RESTRICTED.
+            "ALTER TABLE trading_restrictions ADD COLUMN earnings_window_open_offset_days INTEGER",
+            "ALTER TABLE trading_restrictions ADD COLUMN earnings_window_duration_days INTEGER",
         ):
             try:
                 c.execute(stmt)
@@ -1046,10 +1056,47 @@ def list_restrictions(*, ticker: Optional[str] = None,
 
     out: List[Dict[str, Any]] = []
     for r in rows:
+        kind = (r.get("kind") or "").lower()
         edb = r.get("earnings_days_before")
         eda = r.get("earnings_days_after")
-        if edb is not None or eda is not None:
-            # Earnings-relative restriction. Resolve next earnings date.
+        wo = r.get("earnings_window_open_offset_days")
+        wd = r.get("earnings_window_duration_days")
+
+        # ── earnings_window: the user defines when trading is OPEN.
+        #    Restricted when active_on is OUTSIDE the open window.
+        if kind == "earnings_window" or wo is not None or wd is not None:
+            try:
+                ne = _next_earnings_date(r["ticker"])
+            except Exception:
+                ne = None
+            if ne is None:
+                # Without an earnings date we conservatively report
+                # "currently restricted" so the UI doesn't show a stale
+                # OPEN badge — the user can investigate.
+                annotated = {**r, "_resolved_start": None,
+                             "_resolved_end": None,
+                             "_resolved_earnings_date": None,
+                             "_currently_open": False}
+                out.append(annotated)
+                continue
+            offset = int(wo or 0)
+            duration = int(wd or 0)
+            open_start = ne + _td(days=offset)
+            open_end = open_start + _td(days=duration)
+            # Active (restricted) when active_on is OUTSIDE the open window.
+            currently_open = open_start <= ao <= open_end
+            if not currently_open:
+                annotated = {**r, "_resolved_start": open_start.isoformat(),
+                             "_resolved_end": open_end.isoformat(),
+                             "_resolved_earnings_date": ne.isoformat(),
+                             "_currently_open": False}
+                out.append(annotated)
+            # When currently_open, we INTENTIONALLY don't include the row
+            # in the "active restrictions" output — trading IS allowed.
+
+        # ── earnings_blackout: the user defines when trading is CLOSED.
+        #    Restricted when active_on is INSIDE the blackout window.
+        elif edb is not None or eda is not None:
             try:
                 ne = _next_earnings_date(r["ticker"])
             except Exception:
@@ -1061,13 +1108,14 @@ def list_restrictions(*, ticker: Optional[str] = None,
             window_start = ne - _td(days=days_before)
             window_end = ne + _td(days=days_after)
             if window_start <= ao <= window_end:
-                # Annotate with the resolved window so callers can show it
                 annotated = {**r, "_resolved_start": window_start.isoformat(),
                              "_resolved_end": window_end.isoformat(),
-                             "_resolved_earnings_date": ne.isoformat()}
+                             "_resolved_earnings_date": ne.isoformat(),
+                             "_currently_open": False}
                 out.append(annotated)
+
+        # ── Fixed-window restriction (legacy / hand-set dates).
         else:
-            # Fixed-window restriction.
             start = r.get("start_date")
             end = r.get("end_date")
             if not start:
@@ -1135,6 +1183,8 @@ def add_restriction(*, ticker: str, start_date: str,
                      reason: Optional[str] = None,
                      earnings_days_before: Optional[int] = None,
                      earnings_days_after: Optional[int] = None,
+                     earnings_window_open_offset_days: Optional[int] = None,
+                     earnings_window_duration_days: Optional[int] = None,
                      ) -> Dict[str, Any]:
     now = _now()
     with _conn() as c:
@@ -1143,10 +1193,14 @@ def add_restriction(*, ticker: str, start_date: str,
                                                 kind, reason,
                                                 earnings_days_before,
                                                 earnings_days_after,
+                                                earnings_window_open_offset_days,
+                                                earnings_window_duration_days,
                                                 created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (ticker.strip().upper(), start_date, end_date, kind, reason,
-             earnings_days_before, earnings_days_after, now, now),
+             earnings_days_before, earnings_days_after,
+             earnings_window_open_offset_days, earnings_window_duration_days,
+             now, now),
         )
         row = c.execute(
             "SELECT * FROM trading_restrictions WHERE id=?", (cur.lastrowid,)
@@ -1161,6 +1215,8 @@ def update_restriction(restriction_id: int, *,
                         reason: Optional[str] = None,
                         earnings_days_before: Optional[int] = None,
                         earnings_days_after: Optional[int] = None,
+                        earnings_window_open_offset_days: Optional[int] = None,
+                        earnings_window_duration_days: Optional[int] = None,
                         ) -> Optional[Dict[str, Any]]:
     fields = []
     args: List[Any] = []
@@ -1176,6 +1232,12 @@ def update_restriction(restriction_id: int, *,
         fields.append("earnings_days_before=?"); args.append(earnings_days_before)
     if earnings_days_after is not None:
         fields.append("earnings_days_after=?"); args.append(earnings_days_after)
+    if earnings_window_open_offset_days is not None:
+        fields.append("earnings_window_open_offset_days=?")
+        args.append(earnings_window_open_offset_days)
+    if earnings_window_duration_days is not None:
+        fields.append("earnings_window_duration_days=?")
+        args.append(earnings_window_duration_days)
     if not fields:
         return get_restriction(restriction_id)
     fields.append("updated_at=?"); args.append(_now())
