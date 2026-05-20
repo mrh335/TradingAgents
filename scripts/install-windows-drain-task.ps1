@@ -67,7 +67,11 @@ $Settings = New-ScheduledTaskSettingsSet `
     -StartWhenAvailable `
     -RunOnlyIfNetworkAvailable `
     -MultipleInstances IgnoreNew `
-    -ExecutionTimeLimit (New-TimeSpan -Minutes 25)
+    -ExecutionTimeLimit (New-TimeSpan -Hours 2)
+# 2-hour limit (was 25-min): a single drain may need to process 6+ heavy
+# `analyze` items at 3-5 min each. 25 min was too tight and risked the
+# task being killed mid-drain. MultipleInstances=IgnoreNew prevents
+# overlapping runs, so a long drain just skips the next 30-min tick.
 
 $Principal = New-ScheduledTaskPrincipal `
     -UserId "$env:USERDOMAIN\$env:USERNAME" `
