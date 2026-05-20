@@ -27,7 +27,7 @@ const NAV = [
   { href: "/tools", label: "Tools" },
   { href: "/queue", label: "Queue" },
   { href: "/schedules", label: "Schedules" },
-  { href: "/history", label: "History" },
+  { href: "/history", label: "Past analyses" },
   { href: "/backtest", label: "Backtest" },
   { href: "/calendar", label: "Calendar" },
   { href: "/earnings", label: "Earnings" },

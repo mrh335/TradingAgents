@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Runs, Sidecars } from "@/lib/api";
+import { Runs, RunQueue, Sidecars } from "@/lib/api";
 import type { RunSummary } from "@/lib/types";
 import { decisionColor, fmtDate, fmtTokens, statusColor } from "@/lib/format";
 
@@ -160,14 +160,20 @@ export default function HistoryPage() {
   return (
     <div className="space-y-4">
       <header>
-        <h1 className="text-2xl font-bold">Run history</h1>
+        <h1 className="text-2xl font-bold">Past analyses</h1>
         <p className="text-muted text-sm">
-          Every analysis ever recorded. Click a header to sort. Each row
-          expands to a quick preview; click "Open report →" for the full view.
-          Archives never overwrite — re-running the same ticker+date creates
-          a new row. Delete prunes the SQLite row AND on-disk archive.
+          Every completed analysis ever recorded. Click a header to sort. Each
+          row expands to a quick preview; click &quot;Open report →&quot; for
+          the full view. Archives never overwrite — re-running the same
+          ticker+date creates a new row. Delete prunes the SQLite row AND
+          on-disk archive.
         </p>
       </header>
+
+      {/* Pending-from-queue panel — surfaces scheduled + manual queue items that
+          haven't yet completed, so the user sees "today's 5pm schedule fired,
+          here's what's waiting on Claude Desktop" without leaving this page. */}
+      <PendingFromQueue />
 
       {/* Claude Code controls — always visible, even with zero pending. */}
       <div className="card border-accent/30">
@@ -441,6 +447,145 @@ function ExpandedPreview({ row, pending }: { row: RunSummary; pending: boolean }
           <code className="text-[10px]">{row.log_path}</code>
         </div>
       )}
+    </div>
+  );
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// Pending-from-queue panel — shows queue items that haven't completed
+// yet (scheduled fires, manual /run-queue submissions, /batch jobs).
+// Makes the connection between "I scheduled a 5pm run" and "the run
+// will appear here once Claude Desktop drains the queue" obvious.
+// ──────────────────────────────────────────────────────────────────────
+
+function PendingFromQueue() {
+  const q = useQuery({
+    queryKey: ["run-queue-pending"],
+    queryFn: () => RunQueue.list("pending"),
+    refetchInterval: 30_000,
+  });
+  const cancel = useMutation({
+    mutationFn: (id: string) => RunQueue.cancel(id),
+    onSuccess: () => {
+      // Refresh both the queue panel and the runs list.
+      q.refetch();
+    },
+  });
+
+  const items = q.data ?? [];
+  const fromScheduler = items.filter((i) =>
+    (i.requested_by || "").startsWith("scheduler:"),
+  );
+  const manual = items.filter(
+    (i) => !(i.requested_by || "").startsWith("scheduler:"),
+  );
+
+  if (items.length === 0) {
+    return null; // hide the panel entirely when there's nothing pending
+  }
+
+  return (
+    <div className="card border-l-4 border-l-warning">
+      <div className="flex items-baseline gap-3 flex-wrap mb-2">
+        <h2 className="text-lg font-semibold">
+          ⏳ {items.length} pending in queue
+        </h2>
+        <span className="text-xs text-muted">
+          Waiting on Claude Desktop drain (or sync if you use{" "}
+          <Link href="/ask" className="text-accent hover:underline">
+            /ask
+          </Link>
+          )
+        </span>
+        <Link href="/queue" className="ml-auto btn text-xs">
+          Open /queue →
+        </Link>
+      </div>
+
+      {fromScheduler.length > 0 && (
+        <div className="mb-3">
+          <div className="text-xs uppercase text-muted mb-1">
+            From scheduled runs ({fromScheduler.length})
+          </div>
+          <div className="space-y-1">
+            {fromScheduler.map((i) => {
+              const schedId = (i.requested_by || "").split(":")[1] ?? "?";
+              return (
+                <div
+                  key={i.id}
+                  className="flex items-center gap-3 text-sm"
+                >
+                  <span className="font-semibold">{i.ticker}</span>
+                  <span className="text-xs text-muted">
+                    {i.mode} · queued {fmtDate(i.created_at)}
+                  </span>
+                  <Link
+                    href={`/schedules`}
+                    className="text-xs text-accent hover:underline"
+                  >
+                    schedule #{schedId}
+                  </Link>
+                  <button
+                    className="btn text-xs ml-auto"
+                    onClick={() => {
+                      if (
+                        confirm(
+                          `Cancel ${i.ticker} (${i.mode}) queued from schedule #${schedId}?`,
+                        )
+                      )
+                        cancel.mutate(i.id);
+                    }}
+                  >
+                    Cancel
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {manual.length > 0 && (
+        <div>
+          <div className="text-xs uppercase text-muted mb-1">
+            From manual submissions ({manual.length})
+          </div>
+          <div className="space-y-1">
+            {manual.map((i) => (
+              <div
+                key={i.id}
+                className="flex items-center gap-3 text-sm"
+              >
+                <span className="font-semibold">{i.ticker}</span>
+                <span className="text-xs text-muted">
+                  {i.mode} · {i.requested_by} · queued {fmtDate(i.created_at)}
+                </span>
+                <button
+                  className="btn text-xs ml-auto"
+                  onClick={() => {
+                    if (
+                      confirm(
+                        `Cancel ${i.ticker} (${i.mode}) from ${i.requested_by}?`,
+                      )
+                    )
+                      cancel.mutate(i.id);
+                  }}
+                >
+                  Cancel
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <div className="text-xs text-muted mt-3">
+        These items become rows below when Claude Desktop next runs the
+        <code className="mx-1">tradingagents-analyze</code>skill and drains
+        the queue. If something has been pending for &gt;24h, your CD
+        probably isn&apos;t running — open it and the skill will pick
+        these up automatically.
+      </div>
     </div>
   );
 }
