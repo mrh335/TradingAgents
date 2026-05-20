@@ -1,5 +1,13 @@
 # Claude Code companion guide
 
+> **Queue automation lives in `docs/queue-automation.md`.** Read that first
+> if the user asks about scheduled runs, draining the queue, or
+> Claude Desktop / Cloud Code Routine setup. It documents the four
+> consume paths (manual, Windows Scheduled Task, remote routine, server
+> drainer) and why each exists.
+
+
+
 This file tells Claude Code how to participate as a **token-free analyst**
 on completed run archives — reading the run's analysis, producing briefs
 and deep dives, and submitting the results so the web app surfaces them
