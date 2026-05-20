@@ -1063,6 +1063,7 @@ export const RunQueue = {
       enabled: boolean;
       anthropic_key_present: boolean;
       model: string;
+      supported_models: string[];
       light_modes: string[];
       interval_seconds: number;
     }>("/run-queue/drainer-status"),
@@ -1070,6 +1071,11 @@ export const RunQueue = {
     request<{ enabled: boolean }>("/run-queue/drainer-toggle", {
       method: "POST",
       body: JSON.stringify({ enabled }),
+    }),
+  drainerSetModel: (model: string) =>
+    request<{ model: string }>("/run-queue/drainer-model", {
+      method: "POST",
+      body: JSON.stringify({ model }),
     }),
 };
 

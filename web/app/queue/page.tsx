@@ -50,10 +50,21 @@ export default function QueuePage() {
     mutationFn: (enabled: boolean) => RunQueue.drainerToggle(enabled),
     onSuccess: () => drainer.refetch(),
   });
+  const setDrainerModel = useMutation({
+    mutationFn: (model: string) => RunQueue.drainerSetModel(model),
+    onSuccess: () => drainer.refetch(),
+  });
   const processNow = useMutation({
     mutationFn: (id: string) => RunQueue.processNow(id),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["run-queue"] }),
   });
+
+  // Human labels for the model picker
+  const MODEL_LABELS: Record<string, { label: string; cost: string }> = {
+    "claude-haiku-4-5": { label: "Haiku 4.5 (cheapest, fast)", cost: "$1 / $5 per 1M tokens" },
+    "claude-sonnet-4-5": { label: "Sonnet 4.5 (balanced)", cost: "$3 / $15 per 1M tokens" },
+    "claude-opus-4-5": { label: "Opus 4.5 (smartest)", cost: "$15 / $75 per 1M tokens" },
+  };
 
   const items = q.data ?? [];
   const counts = items.reduce(
@@ -75,12 +86,29 @@ export default function QueuePage() {
           full pipeline using its own LLM budget, and posts the result back.
         </p>
         <p className="text-muted text-xs mt-2">
-          Trigger the worker manually by saying <em>&quot;process the run
-          queue&quot;</em> in a Claude session that has the skill loaded, OR
-          enable the server-side auto-drain below for light-mode items
-          (ask_portfolio, earnings_summary), OR click <strong>Process now</strong>{" "}
-          on individual rows to handle them via Anthropic API on demand.
+          You have <strong>three ways</strong> to drain the queue, listed
+          cheapest first:
         </p>
+        <ul className="text-muted text-xs mt-1 ml-4 list-disc space-y-0.5">
+          <li>
+            <strong className="text-success">Free</strong>: open Claude
+            Desktop with the <code>tradingagents-analyze</code> skill and say
+            &quot;process the run queue&quot;. Best for heavy{" "}
+            <code>analyze</code> runs. Your CD subscription covers it — zero
+            API tokens.
+          </li>
+          <li>
+            <strong>Paid auto</strong>: enable the server-side drainer below.
+            Polls every 5 min, processes light modes (
+            <code>ask_portfolio</code>, <code>earnings_summary</code>) via the
+            Anthropic API. Pick any model — Haiku is cents/day, Opus
+            costs more. Opt-in by toggling on.
+          </li>
+          <li>
+            <strong>Paid per-item</strong>: click ⚡ <strong>Process now</strong>{" "}
+            on any pending row to handle it immediately via Anthropic API.
+          </li>
+        </ul>
       </header>
 
       {/* ─── Server-side auto-drain status + toggle ─── */}
@@ -96,12 +124,13 @@ export default function QueuePage() {
         >
           <div className="flex items-baseline gap-3 flex-wrap">
             <span className="font-semibold">
-              {drainer.data.enabled ? "🟢 Auto-drain ON" : "⚪ Auto-drain off"}
+              {drainer.data.enabled
+                ? "🟢 Server auto-drain ON (paid)"
+                : "⚪ Server auto-drain off"}
             </span>
             <span className="text-xs text-muted">
-              model: <code>{drainer.data.model}</code> · light modes:{" "}
-              <code>{drainer.data.light_modes.join(", ")}</code> · ticks every{" "}
-              {drainer.data.interval_seconds}s
+              light modes: <code>{drainer.data.light_modes.join(", ")}</code> ·
+              ticks every {drainer.data.interval_seconds}s
             </span>
             <button
               className="btn text-xs ml-auto"
@@ -118,20 +147,46 @@ export default function QueuePage() {
               {drainer.data.enabled ? "Turn off" : "Turn on"}
             </button>
           </div>
+
+          {/* Model picker for the API path */}
+          <div className="flex items-baseline gap-3 flex-wrap mt-3">
+            <span className="text-xs text-muted">Model for API path:</span>
+            <select
+              className="input text-xs"
+              value={drainer.data.model}
+              onChange={(e) => setDrainerModel.mutate(e.target.value)}
+              disabled={setDrainerModel.isPending}
+            >
+              {drainer.data.supported_models.map((m) => (
+                <option key={m} value={m}>
+                  {MODEL_LABELS[m]?.label ?? m}
+                </option>
+              ))}
+            </select>
+            <span className="text-xs text-muted">
+              {MODEL_LABELS[drainer.data.model]?.cost ?? ""}
+            </span>
+          </div>
+
           {!drainer.data.anthropic_key_present && (
             <p className="text-xs text-warning mt-2">
               <strong>ANTHROPIC_API_KEY not set in the api container.</strong>{" "}
               Auto-drain + Process now both need it. Add to{" "}
               <code>/volume1/docker/tradingagents/.env</code> on the NAS and
-              restart the api container.
+              restart the api container. (Not needed if you only use the free
+              Claude Desktop path.)
             </p>
           )}
+
           <p className="text-xs text-muted mt-2">
-            Light modes (ask_portfolio + earnings_summary) auto-process when
-            on, using cheap Haiku (cents/day total). Heavy modes
-            (analyze, deep_dive) are <em>not</em> auto-drained — they need
-            the full multi-agent pipeline that only runs locally via Claude
-            Desktop.
+            <strong className="text-success">Free Claude Desktop path is
+            unchanged</strong> — open CD, run the skill, drain everything in
+            the queue (including heavy <code>analyze</code> runs) with zero
+            tokens. This server-side drainer is a <em>second</em> option for
+            light modes when you don&apos;t want to open CD, not a
+            replacement. Heavy modes (analyze, deep_dive) are <em>never</em>{" "}
+            processed by the server drainer — they always need CD or the
+            local multi-agent pipeline.
           </p>
         </div>
       )}

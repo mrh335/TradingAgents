@@ -77,7 +77,32 @@ def _api_key() -> Optional[str]:
     return os.environ.get("ANTHROPIC_API_KEY") or None
 
 
+# Models the drainer can target. Cost-per-1M-tokens reference (input/output):
+#   Haiku:  $1 / $5      ~ cheapest, fast, fine for short context-bound Q&A
+#   Sonnet: $3 / $15     ~ smarter analysis, better for nuanced questions
+#   Opus:   $15 / $75    ~ most capable, slower, best for deep reasoning
+# We expose canonical names; user picks one via /queue UI.
+SUPPORTED_DRAINER_MODELS = (
+    "claude-haiku-4-5",
+    "claude-sonnet-4-5",
+    "claude-opus-4-5",
+)
+
+
 def _model_name() -> str:
+    """Resolve the drainer model. Precedence:
+      1. defaults.auto_drain_model in gui/config.json (set via /queue UI)
+      2. ASK_SYNC_MODEL env var (legacy fallback)
+      3. claude-haiku-4-5 (cheapest default)
+    """
+    try:
+        from gui.config import load
+        cfg = load()
+        configured = (cfg.get("defaults", {}) or {}).get("auto_drain_model")
+        if configured:
+            return configured
+    except Exception:
+        pass
     return os.environ.get("ASK_SYNC_MODEL", "claude-haiku-4-5")
 
 

@@ -308,6 +308,7 @@ def drainer_status() -> dict:
         "enabled": queue_drainer._auto_drain_enabled(),
         "anthropic_key_present": bool(queue_drainer._api_key()),
         "model": queue_drainer._model_name(),
+        "supported_models": list(queue_drainer.SUPPORTED_DRAINER_MODELS),
         "light_modes": list(queue_drainer.LIGHT_MODES),
         "interval_seconds": 300,
     }
@@ -325,6 +326,31 @@ def drainer_toggle(req: DrainerToggleRequest) -> dict:
     cfg.setdefault("defaults", {})["auto_drain_enabled"] = bool(req.enabled)
     save(cfg)
     return {"enabled": bool(req.enabled)}
+
+
+class DrainerModelRequest(BaseModel):
+    model: str
+
+
+@router.post("/drainer-model")
+def drainer_model(req: DrainerModelRequest) -> dict:
+    """Pick the model the auto-drainer + Process-now buttons use when
+    calling the Anthropic API. Haiku is cheapest; Sonnet is the
+    balanced default; Opus is the smartest but most expensive.
+    Doesn't affect Claude Desktop drains — those use whatever model
+    is configured in the run, not this setting."""
+    from service import queue_drainer
+    from gui.config import load, save
+    if req.model not in queue_drainer.SUPPORTED_DRAINER_MODELS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"unsupported model {req.model!r}; "
+                   f"allowed: {list(queue_drainer.SUPPORTED_DRAINER_MODELS)}",
+        )
+    cfg = load()
+    cfg.setdefault("defaults", {})["auto_drain_model"] = req.model
+    save(cfg)
+    return {"model": req.model}
 
 
 @router.post("/reclaim-stale")
