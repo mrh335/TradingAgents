@@ -1053,6 +1053,24 @@ export const RunQueue = {
     request<QueueItem>(`/run-queue/${id}/cancel`, { method: "POST" }),
   delete: (id: string) =>
     request<{ deleted: string }>(`/run-queue/${id}`, { method: "DELETE" }),
+  processNow: (id: string) =>
+    request<{ queue_id: string; mode: string; status: string }>(
+      `/run-queue/${id}/process-now`,
+      { method: "POST" },
+    ),
+  drainerStatus: () =>
+    request<{
+      enabled: boolean;
+      anthropic_key_present: boolean;
+      model: string;
+      light_modes: string[];
+      interval_seconds: number;
+    }>("/run-queue/drainer-status"),
+  drainerToggle: (enabled: boolean) =>
+    request<{ enabled: boolean }>("/run-queue/drainer-toggle", {
+      method: "POST",
+      body: JSON.stringify({ enabled }),
+    }),
 };
 
 // ---- Ask (portfolio Q&A — queue or sync) --------------------------------

@@ -136,6 +136,12 @@ async def _startup() -> None:
     # snappy; 13F data is days-stale anyway.
     from service import holdings_13f_poller
     loop.create_task(holdings_13f_poller.run(interval_seconds=7 * 24 * 3600))
+    # Queue drainer — server-side processor for light-mode queue items
+    # (ask_portfolio + earnings_summary). Idles unless
+    # defaults.auto_drain_enabled is true AND ANTHROPIC_API_KEY is set,
+    # so the cost is opt-in. Ticks every 5 min.
+    from service import queue_drainer
+    loop.create_task(queue_drainer.run(interval_seconds=300))
     logger.info("TradingAgents API ready. CORS origins: %s", _allowed_origins())
 
 

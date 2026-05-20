@@ -40,6 +40,21 @@ export default function QueuePage() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ["run-queue"] }),
   });
 
+  // Server-side drainer state (auto-process light modes via Anthropic API)
+  const drainer = useQuery({
+    queryKey: ["drainer-status"],
+    queryFn: () => RunQueue.drainerStatus(),
+    refetchInterval: 30_000,
+  });
+  const toggleDrainer = useMutation({
+    mutationFn: (enabled: boolean) => RunQueue.drainerToggle(enabled),
+    onSuccess: () => drainer.refetch(),
+  });
+  const processNow = useMutation({
+    mutationFn: (id: string) => RunQueue.processNow(id),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["run-queue"] }),
+  });
+
   const items = q.data ?? [];
   const counts = items.reduce(
     (acc, i) => {
@@ -60,11 +75,66 @@ export default function QueuePage() {
           full pipeline using its own LLM budget, and posts the result back.
         </p>
         <p className="text-muted text-xs mt-2">
-          Trigger the worker manually by saying <em>"process the run queue"</em>{" "}
-          in a Claude session that has the skill loaded, or schedule it via{" "}
-          Claude Code's <code>/loop</code> for unattended processing.
+          Trigger the worker manually by saying <em>&quot;process the run
+          queue&quot;</em> in a Claude session that has the skill loaded, OR
+          enable the server-side auto-drain below for light-mode items
+          (ask_portfolio, earnings_summary), OR click <strong>Process now</strong>{" "}
+          on individual rows to handle them via Anthropic API on demand.
         </p>
       </header>
+
+      {/* ─── Server-side auto-drain status + toggle ─── */}
+      {drainer.data && (
+        <div
+          className={`card border-l-4 ${
+            drainer.data.enabled
+              ? "border-l-success"
+              : drainer.data.anthropic_key_present
+                ? "border-l-muted"
+                : "border-l-warning"
+          }`}
+        >
+          <div className="flex items-baseline gap-3 flex-wrap">
+            <span className="font-semibold">
+              {drainer.data.enabled ? "🟢 Auto-drain ON" : "⚪ Auto-drain off"}
+            </span>
+            <span className="text-xs text-muted">
+              model: <code>{drainer.data.model}</code> · light modes:{" "}
+              <code>{drainer.data.light_modes.join(", ")}</code> · ticks every{" "}
+              {drainer.data.interval_seconds}s
+            </span>
+            <button
+              className="btn text-xs ml-auto"
+              onClick={() => toggleDrainer.mutate(!drainer.data.enabled)}
+              disabled={
+                toggleDrainer.isPending || !drainer.data.anthropic_key_present
+              }
+              title={
+                !drainer.data.anthropic_key_present
+                  ? "Set ANTHROPIC_API_KEY on the api container to enable"
+                  : ""
+              }
+            >
+              {drainer.data.enabled ? "Turn off" : "Turn on"}
+            </button>
+          </div>
+          {!drainer.data.anthropic_key_present && (
+            <p className="text-xs text-warning mt-2">
+              <strong>ANTHROPIC_API_KEY not set in the api container.</strong>{" "}
+              Auto-drain + Process now both need it. Add to{" "}
+              <code>/volume1/docker/tradingagents/.env</code> on the NAS and
+              restart the api container.
+            </p>
+          )}
+          <p className="text-xs text-muted mt-2">
+            Light modes (ask_portfolio + earnings_summary) auto-process when
+            on, using cheap Haiku (cents/day total). Heavy modes
+            (analyze, deep_dive) are <em>not</em> auto-drained — they need
+            the full multi-agent pipeline that only runs locally via Claude
+            Desktop.
+          </p>
+        </div>
+      )}
 
       {/* Status filter chips */}
       <div className="card flex flex-wrap gap-2 items-center">
@@ -169,7 +239,26 @@ export default function QueuePage() {
                       <span className="text-muted">—</span>
                     )}
                   </td>
-                  <td className="text-right whitespace-nowrap">
+                  <td className="text-right whitespace-nowrap space-x-1">
+                    {it.status === "pending" &&
+                      drainer.data?.anthropic_key_present && (
+                        <button
+                          className="btn text-xs"
+                          onClick={() => {
+                            const isHeavy = !drainer.data!.light_modes.includes(it.mode);
+                            const msg = isHeavy
+                              ? `Process ${it.ticker} (${it.mode}) NOW via Anthropic API? Heavy modes like '${it.mode}' need the multi-agent pipeline which only runs in Claude Desktop — server-side processing will reject this. Continue anyway?`
+                              : `Process ${it.ticker} (${it.mode}) NOW via Anthropic API (Haiku, ~$0.005 per call)?`;
+                            if (confirm(msg)) processNow.mutate(it.id);
+                          }}
+                          disabled={processNow.isPending}
+                          title="Process via Anthropic API immediately"
+                        >
+                          {processNow.isPending && processNow.variables === it.id
+                            ? "Processing…"
+                            : "⚡ Process now"}
+                        </button>
+                      )}
                     {(it.status === "pending" || it.status === "claimed") && (
                       <button
                         className="btn text-xs"

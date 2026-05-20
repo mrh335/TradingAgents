@@ -278,6 +278,55 @@ def delete_item(queue_id: str) -> dict:
     return {"deleted": queue_id}
 
 
+@router.post("/{queue_id}/process-now")
+def process_now(queue_id: str) -> dict:
+    """User-triggered immediate processing via Anthropic API. Bypasses
+    the auto_drain_enabled flag (user explicitly clicked) but still
+    needs ANTHROPIC_API_KEY set on the api container.
+
+    Heavy modes (analyze, deep_dive) are rejected — those require the
+    multi-agent pipeline that only runs locally via Claude Desktop.
+    For light modes (ask_portfolio, earnings_summary), the call takes
+    a few seconds + a few thousand tokens on Haiku.
+
+    Returns immediately on success/failure (synchronous call, no queue
+    polling needed)."""
+    from service import queue_drainer
+    try:
+        return queue_drainer.process_one(queue_id)
+    except RuntimeError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"unexpected error: {e}")
+
+
+@router.get("/drainer-status")
+def drainer_status() -> dict:
+    """Used by the UI to show the auto-drain toggle + status."""
+    from service import queue_drainer
+    return {
+        "enabled": queue_drainer._auto_drain_enabled(),
+        "anthropic_key_present": bool(queue_drainer._api_key()),
+        "model": queue_drainer._model_name(),
+        "light_modes": list(queue_drainer.LIGHT_MODES),
+        "interval_seconds": 300,
+    }
+
+
+class DrainerToggleRequest(BaseModel):
+    enabled: bool
+
+
+@router.post("/drainer-toggle")
+def drainer_toggle(req: DrainerToggleRequest) -> dict:
+    """Flip the auto-drain enable flag in gui/config.json."""
+    from gui.config import load, save
+    cfg = load()
+    cfg.setdefault("defaults", {})["auto_drain_enabled"] = bool(req.enabled)
+    save(cfg)
+    return {"enabled": bool(req.enabled)}
+
+
 @router.post("/reclaim-stale")
 def reclaim_stale(older_than_seconds: int = 1800) -> dict:
     """Revert claims older than ``older_than_seconds`` back to pending so
