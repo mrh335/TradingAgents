@@ -230,6 +230,18 @@ def import_run(req: RunImportRequest) -> RunSummary:
     decision = req.brief.decision if req.brief is not None else None
     storage.finalize_run(run_id, decision=decision, log_path=str(archive_path))
 
+    # Propagate comparison_id from metadata onto the run row so the
+    # /compare/{id} view can find this run by group. Skill is expected
+    # to forward options.comparison_id from the queue item into the
+    # archive metadata at publish time; the run-queue /complete path
+    # below also auto-attaches as a fallback.
+    cmp_id = metadata.get("comparison_id")
+    if cmp_id:
+        try:
+            storage.attach_comparison_id(run_id, str(cmp_id))
+        except Exception:
+            pass
+
     row = storage.get_run(run_id) or {}
     return RunSummary(**row)
 

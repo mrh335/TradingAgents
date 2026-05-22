@@ -98,6 +98,27 @@ def init_db() -> None:
             );
             CREATE INDEX IF NOT EXISTS positions_ticker ON positions(ticker, closed_at);
 
+            -- Paper trading positions. Mirrors `positions` but kept separate so
+            -- simulated trades never mingle with the real brokerage book. Adds
+            -- `related_run_id` so we can ask later "how did the paper trades I
+            -- opened based on May 18 NVDA's Overweight rating actually do?"
+            -- The MCP server exposes open/close/list/summary tools that read
+            -- and write here; the webapp never closes a paper position on its
+            -- own (mark-to-market only).
+            CREATE TABLE IF NOT EXISTS paper_positions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ticker TEXT NOT NULL,
+                shares REAL NOT NULL,
+                cost_basis_per_share REAL NOT NULL,
+                opened_at TEXT NOT NULL,
+                closed_at TEXT,
+                closing_price REAL,
+                notes TEXT,
+                related_run_id TEXT,         -- optional FK to runs.run_id ("paper-traded on this recommendation")
+                created_by TEXT              -- 'claude-mcp' | 'web' | 'api' — provenance for debugging
+            );
+            CREATE INDEX IF NOT EXISTS paper_positions_ticker ON paper_positions(ticker, closed_at);
+
             CREATE TABLE IF NOT EXISTS simulations (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 name TEXT,
@@ -330,6 +351,16 @@ def init_db() -> None:
         except Exception:
             pass
         c.execute("CREATE INDEX IF NOT EXISTS runs_batch ON runs(batch_id)")
+
+        # Lazy column add for model A/B comparisons. When the user
+        # submits 3 model combos against the same ticker+date via the
+        # /compare page, all 3 resulting runs share a comparison_id so
+        # the comparison view can fetch them as a group.
+        try:
+            c.execute("ALTER TABLE runs ADD COLUMN comparison_id TEXT")
+        except Exception:
+            pass
+        c.execute("CREATE INDEX IF NOT EXISTS runs_comparison ON runs(comparison_id)")
 
         # Lazy column adds for earnings-window restrictions (Batch 3).
         # Empty (NULL) means "use start_date/end_date the old way";
@@ -673,6 +704,66 @@ def update_position(position_id: int, *, shares: Optional[float] = None,
 def delete_position(position_id: int) -> None:
     with _conn() as c:
         c.execute("DELETE FROM positions WHERE id=?", (position_id,))
+
+
+# ---------------------------------------------------------------------------
+# Paper trading positions
+# ---------------------------------------------------------------------------
+# Same shape as positions() above, separate table so simulated trades never
+# touch the real brokerage book. The MCP server is the primary writer.
+
+def list_paper_positions(*, include_closed: bool = False) -> List[Dict[str, Any]]:
+    with _conn() as c:
+        if include_closed:
+            rows = c.execute(
+                "SELECT * FROM paper_positions ORDER BY opened_at DESC, ticker"
+            ).fetchall()
+        else:
+            rows = c.execute(
+                "SELECT * FROM paper_positions WHERE closed_at IS NULL "
+                "ORDER BY opened_at DESC, ticker"
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def get_paper_position(position_id: int) -> Optional[Dict[str, Any]]:
+    with _conn() as c:
+        row = c.execute(
+            "SELECT * FROM paper_positions WHERE id=?", (position_id,)
+        ).fetchone()
+        return dict(row) if row else None
+
+
+def add_paper_position(*, ticker: str, shares: float,
+                       cost_basis_per_share: float,
+                       opened_at: Optional[str] = None,
+                       notes: Optional[str] = None,
+                       related_run_id: Optional[str] = None,
+                       created_by: Optional[str] = None) -> int:
+    with _conn() as c:
+        cur = c.execute(
+            """INSERT INTO paper_positions(ticker, shares, cost_basis_per_share,
+                                            opened_at, notes, related_run_id,
+                                            created_by)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (ticker.upper(), float(shares), float(cost_basis_per_share),
+             opened_at or _now(), notes, related_run_id, created_by),
+        )
+        return int(cur.lastrowid)
+
+
+def close_paper_position(position_id: int, *, closing_price: float,
+                          closed_at: Optional[str] = None) -> None:
+    with _conn() as c:
+        c.execute(
+            """UPDATE paper_positions SET closing_price=?, closed_at=? WHERE id=?""",
+            (float(closing_price), closed_at or _now(), position_id),
+        )
+
+
+def delete_paper_position(position_id: int) -> None:
+    with _conn() as c:
+        c.execute("DELETE FROM paper_positions WHERE id=?", (position_id,))
 
 
 # ---------------------------------------------------------------------------
@@ -1554,6 +1645,47 @@ def mark_run_running(run_id: str) -> None:
             "UPDATE runs SET status='running', started_at=? WHERE run_id=?",
             (_now(), run_id),
         )
+
+
+# ---------------------------------------------------------------------------
+# Model A/B comparisons — multiple runs against the same ticker/date with
+# only the LLM model varying, grouped by comparison_id for side-by-side view.
+# ---------------------------------------------------------------------------
+
+def new_comparison_id() -> str:
+    return "cmp_" + uuid.uuid4().hex[:12]
+
+
+def attach_comparison_id(run_id: str, comparison_id: str) -> None:
+    """Tag a run as part of a comparison group."""
+    with _conn() as c:
+        c.execute(
+            "UPDATE runs SET comparison_id=? WHERE run_id=?",
+            (comparison_id, run_id),
+        )
+
+
+def list_runs_in_comparison(comparison_id: str) -> List[Dict[str, Any]]:
+    """All runs that share this comparison_id. Used by the /compare/{id}
+    view to assemble the side-by-side table."""
+    with _conn() as c:
+        return [dict(r) for r in c.execute(
+            """SELECT * FROM runs WHERE comparison_id=?
+               ORDER BY started_at ASC, run_id ASC""",
+            (comparison_id,),
+        ).fetchall()]
+
+
+def list_queue_items_for_comparison(comparison_id: str) -> List[Dict[str, Any]]:
+    """All queue items submitted under a comparison_id (looking inside
+    options_json since run_queue doesn't have a dedicated column). Useful
+    while runs are still pending and haven't created runs rows yet."""
+    sql = """SELECT * FROM run_queue
+             WHERE options_json LIKE ?
+             ORDER BY created_at ASC"""
+    pattern = f'%"comparison_id": "{comparison_id}"%'
+    with _conn() as c:
+        return [dict(r) for r in c.execute(sql, (pattern,)).fetchall()]
 
 
 # ---------------------------------------------------------------------------

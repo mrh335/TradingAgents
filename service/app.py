@@ -27,6 +27,7 @@ from service.routers import (
     briefs,
     calendar as calendar_router,
     charts as charts_router,
+    compare as compare_router,
     chat,
     dashboard as dashboard_router,
     discover as discover_router,
@@ -39,6 +40,7 @@ from service.routers import (
     news_alerts as news_alerts_router,
     news_feed,
     notes,
+    paper,
     planner,
     portfolio,
     portfolio_metrics as portfolio_metrics_router,
@@ -166,6 +168,7 @@ app.include_router(exports.router)
 app.include_router(streaming.router)
 app.include_router(watchlist.router)
 app.include_router(portfolio.router)
+app.include_router(paper.router)
 app.include_router(calendar_router.router)
 app.include_router(news_feed.router)
 app.include_router(simulation.router)
@@ -186,6 +189,7 @@ app.include_router(portfolio_metrics_router.router)
 app.include_router(macro_router.router)
 app.include_router(earnings_router.router)
 app.include_router(ask_router.router)
+app.include_router(compare_router.router)
 
 
 def main() -> int:

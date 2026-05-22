@@ -1079,6 +1079,102 @@ export const RunQueue = {
     }),
 };
 
+// ---- Compare (model A/B testing) -----------------------------------------
+
+export type ModelCombo = {
+  provider: string;
+  deep_model: string;
+  quick_model?: string;
+  label?: string;
+};
+
+export type CompareCreateRequest = {
+  ticker: string;
+  trade_date?: string;
+  analysis_mode?: "fresh" | "incremental";
+  combos: ModelCombo[];
+  notes?: string;
+};
+
+export type CompareCreateResponse = {
+  comparison_id: string;
+  queue_ids: string[];
+  ticker: string;
+  trade_date: string;
+  combo_count: number;
+};
+
+export type CompareRowState = {
+  label: string;
+  provider: string | null;
+  deep_model: string | null;
+  quick_model: string | null;
+  queue_id: string | null;
+  queue_status: "pending" | "claimed" | "done" | "error" | "cancelled" | null;
+  queue_error: string | null;
+  run_id: string | null;
+  decision: string | null;
+  run_status: string | null;
+  started_at: string | null;
+  completed_at: string | null;
+  llm_calls: number | null;
+  tool_calls: number | null;
+  tokens_in: number | null;
+  tokens_out: number | null;
+  log_path: string | null;
+  brief_tldr: string | null;
+  brief_timeframe: string | null;
+  brief_position_size: string | null;
+  brief_entry_strategy: string | null;
+  brief_stop_loss: string | null;
+  brief_take_profit: string | null;
+  trigger_count: number | null;
+  risk_count: number | null;
+  brief_benchmark_view: string | null;
+};
+
+export type AgreementSummary = {
+  total_runs: number;
+  completed_runs: number;
+  decisions: Record<string, number>;
+  consensus: string | null;
+  consensus_strength_pct: number | null;
+  outliers: string[];
+};
+
+export type CompareDetailResponse = {
+  comparison_id: string;
+  ticker: string;
+  trade_date: string;
+  rows: CompareRowState[];
+  agreement: AgreementSummary;
+  overall_status: "pending" | "in_progress" | "partial" | "complete";
+  created_at: string | null;
+};
+
+export type CompareListRow = {
+  comparison_id: string;
+  ticker: string;
+  trade_date: string;
+  combo_count: number;
+  completed_count: number;
+  overall_status: "pending" | "in_progress" | "partial" | "complete";
+  consensus: string | null;
+  created_at: string;
+};
+
+export const Compare = {
+  create: (req: CompareCreateRequest) =>
+    request<CompareCreateResponse>("/compare", {
+      method: "POST",
+      body: JSON.stringify({ analysis_mode: "fresh", ...req }),
+    }),
+  get: (comparison_id: string) =>
+    request<CompareDetailResponse>(`/compare/${comparison_id}`),
+  list: (limit = 50) =>
+    request<CompareListRow[]>(`/compare?limit=${limit}`),
+};
+
 // ---- Ask (portfolio Q&A — queue or sync) --------------------------------
 
 export type AskMode = "queue" | "sync";

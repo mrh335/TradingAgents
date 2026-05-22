@@ -236,6 +236,18 @@ def complete_item(queue_id: str, req: QueueCompleteRequest) -> QueueItem:
     if not row:
         raise HTTPException(status_code=404, detail="queue item not found")
     storage.complete_queue_item(queue_id, result_run_id=req.result_run_id)
+    # Belt-and-braces: if this queue item carried a comparison_id in its
+    # options AND a result_run_id was supplied, attach the comparison_id
+    # to the run. /runs/import does this too via metadata, but doing it
+    # here covers the case where a worker didn't put the id in metadata.
+    if req.result_run_id:
+        try:
+            opts = json.loads(row.get("options_json") or "{}")
+            cmp_id = opts.get("comparison_id")
+            if cmp_id:
+                storage.attach_comparison_id(req.result_run_id, str(cmp_id))
+        except Exception:
+            pass
     updated = storage.get_queue_item(queue_id) or row
     return _row_to_item(updated)
 
