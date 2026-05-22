@@ -6,8 +6,33 @@ export type Trigger = {
   action: string;
 };
 
+// v2 structured-table types — populated by new briefs, optional for old.
+export type EntryStep = {
+  label: string;
+  when: string;
+  price?: string | null;
+  size_pct?: string | null;
+  notes?: string | null;
+};
+
+export type ExitKind = "stop_loss" | "take_profit" | "time_based" | "thesis_break";
+
+export type ExitRule = {
+  kind: ExitKind | string;
+  condition: string;
+  price?: string | null;
+  action: string;
+  notes?: string | null;
+};
+
+export type KeyNumber = {
+  label: string;
+  value: string;
+};
+
 export type Brief = {
   decision: string;
+  action_plain?: string | null;
   tldr: string;
   timeframe: string;
   position_size: string;
@@ -17,6 +42,11 @@ export type Brief = {
   triggers: Trigger[];
   key_risks: string[];
   benchmark_view: string;
+  // v2 structured fields (optional for back-compat with old briefs)
+  entry_plan?: EntryStep[] | null;
+  exit_plan?: ExitRule[] | null;
+  key_numbers?: KeyNumber[] | null;
+  jargon_glossary?: Record<string, string> | null;
 };
 
 export type RunSummary = {

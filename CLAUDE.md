@@ -252,29 +252,60 @@ recommendation pulled out of thin air.
 
 ## Schema reference (copy this into the Brief you POST)
 
+**Note v2 (2026-05-20+):** the schema gained structured-table fields
+(``entry_plan``, ``exit_plan``, ``key_numbers``, ``jargon_glossary``).
+Always populate them — the UI renders them as tables. Long prose in
+the legacy fields (``entry_strategy``, ``stop_loss``, ``take_profit``,
+``position_size``) is now considered a regression. Use the new fields.
+
 ```json
 {
   "decision": "Buy",
-  "tldr": "Initiate a staged 4–5% NVDA position over 4–6 weeks. AI capex
-            remains the primary driver and fundamentals stay strong, but
-            near-term technical setup justifies a measured entry.",
+  "action_plain": "buy a starter position",
+  "tldr": "Buy a small NVDA position now and add gradually over 4-6 weeks. The AI infrastructure buildout drives demand and the company is growing revenue 60% with 70% gross margins.",
   "timeframe": "4–6 weeks",
-  "position_size": "4–5% of portfolio across three tranches",
-  "entry_strategy": "Tranche 1 (~15%) at current levels near $198, Tranche
-                     2 (~45%) at $203–205 if MACD re-expands, Tranche 3
-                     (~40%) on any pullback to the $187–192 zone.",
-  "stop_loss": "Sustained close below $183 (200-day SMA)",
-  "take_profit": "Re-evaluate at $245 or after 6 weeks, whichever first",
+  "position_size": "4–5% of portfolio total, spread over 3 separate purchases",
+
+  "key_numbers": [
+    {"label": "Current price", "value": "$198.40"},
+    {"label": "Next earnings call", "value": "2026-08-21"},
+    {"label": "Average price last 50 days", "value": "$192.10"},
+    {"label": "Average price last 200 days", "value": "$165.30"},
+    {"label": "52-week high", "value": "$210.50"},
+    {"label": "Revenue growth (year over year)", "value": "+62%"},
+    {"label": "Gross margin", "value": "73%"}
+  ],
+
+  "entry_plan": [
+    {"label": "First purchase (now)", "when": "tomorrow at market open", "price": "~$198", "size_pct": "15% of target $$", "notes": "small anchor"},
+    {"label": "Second purchase", "when": "only if it pulls back to $187-192", "price": "$187-192", "size_pct": "40% of target $$", "notes": ""},
+    {"label": "Third purchase", "when": "if it breaks above $205 with strong volume", "price": "$205+", "size_pct": "45% of target $$", "notes": "confirms uptrend"}
+  ],
+
+  "exit_plan": [
+    {"kind": "stop_loss", "condition": "price closes below $183 for two days in a row", "price": "$183", "action": "sell everything", "notes": "below the 200-day average — thesis broken"},
+    {"kind": "take_profit", "condition": "price reaches $245", "price": "$245", "action": "sell half", "notes": "lock in gains, let the rest run"},
+    {"kind": "time_based", "condition": "6 weeks have passed regardless", "price": null, "action": "review the position; re-decide whether to hold", "notes": ""},
+    {"kind": "thesis_break", "condition": "Q3 earnings miss by more than 5%", "price": null, "action": "sell half immediately", "notes": ""}
+  ],
+
   "triggers": [
-    {"condition": "NVDA closes below $183 on volume", "action": "Exit position; thesis broken"},
-    {"condition": "MACD bullish crossover on the daily", "action": "Add tranche 2 immediately"},
-    {"condition": "Q3 revenue miss > 5% vs consensus", "action": "Cut position to half"}
+    {"condition": "NVDA closes below $183 on heavy volume", "action": "sell everything; thesis is broken"},
+    {"condition": "Average price over 50 days crosses above average over 200 days", "action": "add the second purchase now"},
+    {"condition": "Q3 revenue miss greater than 5%", "action": "sell half of the position"}
   ],
+
   "key_risks": [
-    "Cyclical demand cooldown if hyperscaler capex pauses",
-    "China export curbs widening to consumer-grade chips",
-    "AI bubble pop — stock multiple compression even with strong earnings"
+    "AI spending could slow if cloud customers cut their budgets — that would knock the price down even if earnings stay healthy",
+    "U.S. export rules to China could widen, hurting another ~20% of revenue",
+    "If the AI infrastructure story stalls, the stock could drop a lot even without bad earnings"
   ],
+
+  "jargon_glossary": {
+    "200-day SMA": "The average closing price over the last 200 trading days — a slow trend line. Price above it is generally bullish.",
+    "P/E ratio": "Stock price divided by the past year of earnings per share. Lower is cheaper for the same earnings."
+  },
+
   "benchmark_view": "Likely to outperform SPY by 5–10% over the next 6
                      weeks if AI capex narrative holds; underperforms
                      hard in a tech selloff."

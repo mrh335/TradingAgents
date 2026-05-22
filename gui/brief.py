@@ -47,7 +47,105 @@ class Trigger(BaseModel):
         description=(
             "Concrete action to take when the condition fires. "
             "Example: 'Reduce position by 50%; reassess thesis' or "
-            "'Add tranche 2 (~45% of target weight)'."
+            "'Add the second purchase (about 45% of your target $$)'."
+        )
+    )
+
+
+class EntryStep(BaseModel):
+    """One row of the buy-in plan, table-shaped for easy reading."""
+    label: str = Field(
+        description=(
+            "Short label for this entry step. Examples: 'Buy now (anchor)', "
+            "'Wait for pullback', 'Confirm breakout', 'Earnings beat'. "
+            "Avoid the word 'tranche' — use 'first purchase / second "
+            "purchase' or 'now / pullback / breakout'."
+        )
+    )
+    when: str = Field(
+        description=(
+            "Plain-English when. Examples: 'today at the open', "
+            "'if it pulls back to $381', 'after the next earnings call', "
+            "'when the 50-day average crosses above the 200-day average'."
+        )
+    )
+    price: Optional[str] = Field(
+        default=None,
+        description=(
+            "Target price as a string. Examples: '~$389', '$381 limit', "
+            "'$220-225 range', 'market price'. Null when there's no "
+            "specific price (e.g., earnings-trigger entry)."
+        ),
+    )
+    size_pct: Optional[str] = Field(
+        default=None,
+        description=(
+            "Size as a string with units. Examples: '0.3% of portfolio', "
+            "'15 shares', '$3,000', '1/3 of total position'. Use whatever "
+            "the analysis specifies, but always include the unit."
+        ),
+    )
+    notes: Optional[str] = Field(
+        default=None,
+        description="One short clarifier (under 80 chars). Optional.",
+    )
+
+
+class ExitRule(BaseModel):
+    """One row of the exit plan — when to take profits, cut losses, or
+    exit on a thesis-break. Multiple rules per brief, each addressing
+    a different scenario, so the user has a complete decision tree."""
+    kind: str = Field(
+        description=(
+            "One of: 'stop_loss' (exit to limit damage), 'take_profit' "
+            "(exit to lock in gains), 'time_based' (exit after a fixed "
+            "date or holding period), 'thesis_break' (exit because the "
+            "reason for buying is gone). Choose the closest match."
+        )
+    )
+    condition: str = Field(
+        description=(
+            "Plain-English condition. Examples: 'price closes below $370 "
+            "for two days in a row', 'price hits $440', 'after the Q3 "
+            "earnings call regardless', 'if the DOJ announces a forced "
+            "break-up of the company'."
+        )
+    )
+    price: Optional[str] = Field(
+        default=None,
+        description="Concrete trigger price as a string when applicable.",
+    )
+    action: str = Field(
+        description=(
+            "What to do when triggered. Examples: 'sell everything', "
+            "'sell half', 'sell 25% and re-evaluate', 'just review, no "
+            "automatic action'. Be specific about the percentage."
+        )
+    )
+    notes: Optional[str] = Field(
+        default=None,
+        description="One short clarifier under 80 chars. Optional.",
+    )
+
+
+class KeyNumber(BaseModel):
+    """One row of the numbers-at-a-glance table. Common rows: current
+    price, recent earnings date, next earnings date, 50-day average,
+    200-day average, 52-week high, 52-week low, P/E, free cash flow
+    yield. The brief picks 4-8 rows that matter most for THIS trade.
+    """
+    label: str = Field(
+        description=(
+            "What this number is, in everyday language. Examples: "
+            "'Current price', 'Next earnings call', '52-week high', "
+            "'Average price over last 50 days (50d SMA)'. If using a "
+            "technical term, add a parenthetical in plain English."
+        )
+    )
+    value: str = Field(
+        description=(
+            "The value as a string with units. Examples: '$389.21', "
+            "'2026-07-30', '36% (high — competitors are 20-25%)'."
         )
     )
 
@@ -133,28 +231,129 @@ class Brief(BaseModel):
         )
     )
 
+    # ── NEW structured table fields (v2 brief format) ──
+    # Optional for backwards compat with old briefs that only have prose.
+    # New briefs SHOULD populate all three so the UI can render tables
+    # instead of walls of text. The LLM prompt below makes them effectively
+    # required.
+
+    entry_plan: Optional[List[EntryStep]] = Field(
+        default=None,
+        description=(
+            "TABLE of buy-in steps. 1-4 rows depending on whether this is "
+            "a single entry or a staged buy. Each row: label, when, price, "
+            "size, optional notes. The user sees this as a clean table — "
+            "make every cell short and scannable. NEVER stuff a paragraph "
+            "into a single cell. If you find yourself wanting to write "
+            "more than ~80 chars in one cell, split into more rows."
+        ),
+    )
+    exit_plan: Optional[List[ExitRule]] = Field(
+        default=None,
+        description=(
+            "TABLE of exit rules. Typically 3-5 rows covering: a stop_loss, "
+            "one or two take_profit levels, optionally a time_based exit, "
+            "and one thesis_break rule. Each row tells the user exactly "
+            "when to act and how much to sell. This is the most-asked-for "
+            "field — keep it tight and complete."
+        ),
+    )
+    key_numbers: Optional[List[KeyNumber]] = Field(
+        default=None,
+        description=(
+            "TABLE of 4-8 numbers that matter most for THIS trade. Common: "
+            "Current price, Next earnings date, 50-day average, 200-day "
+            "average, 52-week high, 52-week low, P/E, Free cash flow yield, "
+            "Operating margin, Revenue growth (year-over-year). Pick what "
+            "the underlying analysis emphasizes; skip what's not material."
+        ),
+    )
+    jargon_glossary: Optional[Dict[str, str]] = Field(
+        default=None,
+        description=(
+            "Optional plain-English definitions for any technical terms that "
+            "appear in this brief. Map term → 1-sentence definition. "
+            "Examples: {'200-day SMA': 'The average closing price over the "
+            "last 200 trading days — a slow trend line.', 'P/E ratio': "
+            "'Stock price divided by the past year of earnings per share.'}. "
+            "The UI surfaces these as tooltips so the user can hover for the "
+            "meaning. Skip if there's no jargon in your brief (the goal)."
+        ),
+    )
+
     def to_markdown(self) -> str:
-        triggers_md = "\n".join(
-            f"- **If** {t.condition.strip()} → {t.action.strip()}"
-            for t in self.triggers
-        ) or "_(none extracted)_"
-        risks_md = "\n".join(f"- {r.strip()}" for r in self.key_risks) or "_(none)_"
         # Plain-English action lives just under the rating header for readers
         # who don't speak Overweight/Underweight.
         plain_header = (
-            f"_{self.action_plain.strip()}_\n\n" if self.action_plain else ""
+            f"**{self.action_plain.strip()}**\n\n" if self.action_plain else ""
         )
+
+        # Key numbers table (if structured rows exist)
+        key_numbers_md = ""
+        if self.key_numbers:
+            rows = "\n".join(
+                f"| {n.label} | {n.value} |" for n in self.key_numbers
+            )
+            key_numbers_md = (
+                "\n#### Key numbers at a glance\n\n"
+                "| What | Value |\n|---|---|\n" + rows + "\n"
+            )
+
+        # Entry plan table
+        entry_md = ""
+        if self.entry_plan:
+            rows = "\n".join(
+                f"| {e.label} | {e.when} | {e.price or '—'} | {e.size_pct or '—'} | {e.notes or ''} |"
+                for e in self.entry_plan
+            )
+            entry_md = (
+                "\n#### How to enter\n\n"
+                "| Step | When | Price | Size | Notes |\n|---|---|---|---|---|\n"
+                + rows + "\n"
+            )
+        else:
+            entry_md = f"\n**Entry strategy:** {self.entry_strategy.strip()}\n"
+
+        # Exit plan table
+        exit_md = ""
+        if self.exit_plan:
+            rows = "\n".join(
+                f"| {e.kind.replace('_', ' ').title()} | {e.condition} | {e.price or '—'} | {e.action} |"
+                for e in self.exit_plan
+            )
+            exit_md = (
+                "\n#### How to exit\n\n"
+                "| Type | Condition | Price | What to do |\n|---|---|---|---|\n"
+                + rows + "\n"
+            )
+        else:
+            exit_md = (
+                f"\n**Stop loss:** {self.stop_loss.strip()}  \n"
+                f"**Take profit:** {self.take_profit.strip()}\n"
+            )
+
+        triggers_md = "\n".join(
+            f"| {t.condition.strip()} | {t.action.strip()} |"
+            for t in self.triggers
+        )
+        triggers_block = (
+            "\n#### Trigger points (what to watch for)\n\n"
+            "| If this happens | Then do this |\n|---|---|\n" + triggers_md + "\n"
+        ) if self.triggers else ""
+
+        risks_md = "\n".join(f"- {r.strip()}" for r in self.key_risks) or "_(none)_"
+
         return (
             f"### {self.decision}\n\n"
             f"{plain_header}"
             f"{self.tldr.strip()}\n\n"
             f"**Timeframe:** {self.timeframe.strip()}  \n"
-            f"**Position size:** {self.position_size.strip()}  \n"
-            f"**Entry:** {self.entry_strategy.strip()}  \n"
-            f"**Stop loss:** {self.stop_loss.strip()}  \n"
-            f"**Take profit:** {self.take_profit.strip()}\n\n"
-            f"#### Trigger points\n\n{triggers_md}\n\n"
-            f"#### Key risks\n\n{risks_md}\n\n"
+            f"**Position size:** {self.position_size.strip()}\n"
+            f"{key_numbers_md}"
+            f"{entry_md}"
+            f"{exit_md}"
+            f"{triggers_block}"
+            f"\n#### Key risks\n\n{risks_md}\n\n"
             f"**vs S&P 500:** {self.benchmark_view.strip()}\n"
         )
 
@@ -169,34 +368,83 @@ _PROMPT_HEADER = (
     "technical indicators, a bull/bear debate, a trader plan, and a "
     "risk-management debate, ending with a final Portfolio Manager "
     "decision.\n\n"
-    "## Audience\n"
-    "Write for a **mechanical engineer who is not a finance person**. They "
-    "understand percentages, ratios, units, tolerances, and basic stats "
-    "but DO NOT know Wall-Street vocabulary. Think of someone who reads "
-    "engineering specs and runs FEA simulations but has never traded "
-    "options. Use analogies from physics / engineering when helpful "
-    "(e.g. 'volatility is like vibration amplitude — bigger means more "
-    "uncertainty about the next position').\n\n"
-    "## Vocabulary rules (strict)\n"
-    "- Use the canonical 5-tier ``decision`` (Buy / Overweight / Hold / "
-    "Underweight / Sell) — this is the schema and can't change — but ALSO "
-    "fill the ``action_plain`` field with 3-8 everyday words. Examples:\n"
+    "## Audience (this matters more than anything else)\n"
+    "The reader is a **mechanical engineer with NO finance background**. "
+    "They understand: percentages, ratios, units, tolerances, mean/median, "
+    "trend lines, and signed numbers. They DO NOT understand: 'Overweight', "
+    "'Underweight', 'tranche', 'accumulate', 'multiple compression', "
+    "'sector rotation', 'mean reversion', 'consensus revision', 'beta', "
+    "'alpha', 'Sharpe', 'GTC limit', 'MOC'.\n\n"
+    "Every sentence you write goes through a filter: 'Would my engineer "
+    "friend who has never traded a stock understand this without a "
+    "dictionary?' If not, rewrite it.\n\n"
+    "## STRUCTURE: tables over walls of text\n"
+    "Fields that hold lists (entry_plan, exit_plan, key_numbers, triggers, "
+    "key_risks) get rendered as TABLES in the UI. Each cell should be:\n"
+    "  - SHORT (under 80 characters where possible)\n"
+    "  - SCANNABLE (a glance gives the answer)\n"
+    "  - REPETITION-FREE (don't restate the ticker name in every row)\n\n"
+    "If you find yourself wanting to write a paragraph into one cell, split "
+    "it into multiple rows. If you find yourself repeating the same context "
+    "across rows, move that context into the top-level ``tldr`` instead.\n\n"
+    "Example of BAD (do not do this):\n"
+    "  entry_plan: [{label: 'Multi-step entry plan', when: 'Tranche 1: 0.3% "
+    "(~15 shares) at next-session open ~$389 — small anchor to guarantee "
+    "participation. Tranche 2: 0.45% (~24 shares) as GTC limit at $381 …'}]\n\n"
+    "Example of GOOD (do this):\n"
+    "  entry_plan: [\n"
+    "    {label: 'First purchase (now)', when: 'tomorrow at market open', "
+    "price: '~$389', size_pct: '15 shares (0.3%)', notes: 'small anchor'},\n"
+    "    {label: 'Second purchase', when: 'only if it pulls back', "
+    "price: '$381', size_pct: '24 shares (0.45%)', notes: ''},\n"
+    "    {label: 'Third purchase', when: 'on breakout above $400', "
+    "price: '$400+', size_pct: '~27 shares (0.5%)', notes: 'momentum add'},\n"
+    "  ]\n\n"
+    "## Vocabulary rules (strict — no exceptions)\n"
+    "1. **decision** stays in the canonical 5-tier schema (Buy / Overweight "
+    "/ Hold / Underweight / Sell) because that's the API contract.\n"
+    "2. **action_plain** is REQUIRED. Map the decision like this and put it "
+    "in everyday language:\n"
     "    Buy         → 'buy a starter position'\n"
-    "    Overweight  → 'add more than usual'\n"
-    "    Hold        → 'keep what you have, no new money'\n"
-    "    Underweight → 'trim about half'\n"
+    "    Overweight  → 'add more than usual — gradually scale up'\n"
+    "    Hold        → 'keep what you have, do not buy more'\n"
+    "    Underweight → 'sell about half'\n"
     "    Sell        → 'sell out completely'\n"
-    "- Banned-without-parenthetical-translation: Overweight, Underweight, "
-    "PEG, EV/EBITDA, beta, alpha, RSI, MACD, MA crossover, Sharpe, drawdown, "
-    "MOC, tranche. If you must use them, put the plain meaning in "
-    "parentheses immediately after. e.g. 'PEG of 0.63 (cheaper than a "
-    "fairly-priced stock; lower is better here)'.\n"
-    "- Specific dollar prices and percentages stay as-is — those are "
-    "concrete, not jargon. Quote them when the analysis gives them.\n"
-    "- ``tldr`` leads with the action a person would actually take, in one "
-    "sentence. Second sentence (if needed) explains why in plain terms.\n"
-    "- ``key_risks`` are 'what could go wrong' written in everyday English. "
-    "No 'multiple compression', no 'sector rotation', no 'mean reversion'.\n\n"
+    "   Never leave action_plain empty.\n"
+    "3. Any of these terms in your output MUST be immediately followed by "
+    "a parenthetical plain-English translation (or just drop the term):\n"
+    "    Overweight, Underweight, tranche, accumulate, PEG, EV/EBITDA, "
+    "    beta, alpha, RSI, MACD, MA crossover, Sharpe, drawdown, MOC, "
+    "    GTC, Bollinger band, ATR, mean reversion, multiple compression, "
+    "    sector rotation\n"
+    "   Examples:\n"
+    "    BAD : 'PEG of 0.63 makes this attractive'\n"
+    "    GOOD: 'PEG ratio of 0.63 — cheaper than a fairly-priced stock; "
+    "    lower numbers are better here'\n"
+    "    BAD : 'place a GTC limit at $381'\n"
+    "    GOOD: 'set a standing buy order at $381 that stays active until "
+    "    filled or cancelled'\n"
+    "4. Use jargon_glossary to define any technical term you couldn't "
+    "rewrite. The UI shows these as hover-tooltips.\n"
+    "5. Specific prices and percentages stay as-is. Those are concrete.\n\n"
+    "## tldr\n"
+    "Lead with the action a person would actually take, in ONE sentence. "
+    "Optional second sentence explains why in plain terms. Do NOT include "
+    "'Overweight' / 'Underweight' as standalone words in the tldr — use "
+    "the plain-English mapping. Total length: 2 sentences max, 50 words "
+    "max, no Wall Street jargon.\n\n"
+    "BAD tldr: 'Maintain GOOGL Overweight after a 3% pullback to $388.91. "
+    "Trend strongly intact (above all MAs, 50-SMA buffer +15%, 200-SMA "
+    "buffer +32%). Fundamentals top-tier...'\n\n"
+    "GOOD tldr: 'Add more GOOGL gradually over the next month. The stock "
+    "is well above its long-term averages and the business is growing "
+    "revenue 22% with 36% margins — both very strong by industry standards.'\n\n"
+    "## key_risks\n"
+    "3-5 plain-English 'what could go wrong' bullets. No 'multiple "
+    "compression', no 'sector rotation', no 'mean reversion'.\n\n"
+    "BAD: 'Multiple compression in the GenAI capex narrative'\n"
+    "GOOD: 'AI spending could slow if cloud customers cut budgets, which "
+    "would knock down the price even if earnings stay flat'\n\n"
     "## Process\n"
     "Read the full analysis below and produce a structured brief. Quote "
     "specific prices, levels, and timeframes from the analysis whenever it "
@@ -204,7 +452,11 @@ _PROMPT_HEADER = (
     "reasonable inference based on the rest of the content (don't say "
     "'not specified' — make the call). When the underlying analysis is "
     "contradictory or thin (often the case with smaller local models), "
-    "say so honestly in ``tldr`` and default ``decision`` to Hold.\n"
+    "say so honestly in ``tldr`` and default ``decision`` to Hold.\n\n"
+    "ALWAYS populate the structured table fields (entry_plan, exit_plan, "
+    "key_numbers). Do not leave them null — they're the most important "
+    "improvement in this brief format. Even if the analysis is thin, "
+    "make reasonable inferences and fill them in.\n"
 )
 
 
