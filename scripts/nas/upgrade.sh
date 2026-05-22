@@ -45,8 +45,10 @@ echo
 CHANGED=\$(git diff --name-only \$PRE..\$POST)
 REBUILD_API=0
 REBUILD_WEB=0
+REBUILD_MCP=0
 RESTART_API=0
 RESTART_WEB=0
+RESTART_MCP=0
 
 # Look for paths that change each image. The Dockerfile, requirements,
 # pyproject — these REQUIRE a full rebuild. Anything else under the
@@ -68,12 +70,17 @@ elif echo \"\$CHANGED\" | grep -qE '^web/'; then
     REBUILD_WEB=1
     RESTART_WEB=1
 fi
-# Compose changes touch both.
+# MCP service rebuild triggers (Dockerfile.mcp, mcp/ source).
+if echo \"\$CHANGED\" | grep -qE '^(Dockerfile\\.mcp|mcp/)'; then
+    REBUILD_MCP=1; RESTART_MCP=1
+fi
+# Compose changes touch all three.
 if echo \"\$CHANGED\" | grep -qE '^docker-compose\\.yml'; then
-    REBUILD_API=1; REBUILD_WEB=1; RESTART_API=1; RESTART_WEB=1
+    REBUILD_API=1; REBUILD_WEB=1; REBUILD_MCP=1
+    RESTART_API=1; RESTART_WEB=1; RESTART_MCP=1
 fi
 
-if [ \$REBUILD_API -eq 0 ] && [ \$REBUILD_WEB -eq 0 ]; then
+if [ \$REBUILD_API -eq 0 ] && [ \$REBUILD_WEB -eq 0 ] && [ \$REBUILD_MCP -eq 0 ]; then
     echo '[upgrade] no code/config changes that need a rebuild — done.'
     exit 0
 fi
@@ -81,9 +88,11 @@ fi
 TO_BUILD=''
 [ \$REBUILD_API -eq 1 ] && TO_BUILD=\"\$TO_BUILD api\"
 [ \$REBUILD_WEB -eq 1 ] && TO_BUILD=\"\$TO_BUILD web\"
+[ \$REBUILD_MCP -eq 1 ] && TO_BUILD=\"\$TO_BUILD mcp\"
 TO_RESTART=''
 [ \$RESTART_API -eq 1 ] && TO_RESTART=\"\$TO_RESTART api\"
 [ \$RESTART_WEB -eq 1 ] && TO_RESTART=\"\$TO_RESTART web\"
+[ \$RESTART_MCP -eq 1 ] && TO_RESTART=\"\$TO_RESTART mcp\"
 
 echo \"[upgrade] rebuilding:\$TO_BUILD\"
 docker compose build\$TO_BUILD
@@ -98,6 +107,11 @@ echo
 [ \$RESTART_WEB -eq 1 ] && {
     echo '[upgrade] web logs (last 20):'
     docker compose logs --tail=20 web
+    echo
+}
+[ \$RESTART_MCP -eq 1 ] && {
+    echo '[upgrade] mcp logs (last 20):'
+    docker compose logs --tail=20 mcp
 }
 "
 
