@@ -48,6 +48,38 @@ services:
       retries: 3
       start_period: 60s
 
+  # ---- MCP server (NEW) ----------------------------------------------
+  # Exposes the TradingAgents webapp + paper trading to Claude Desktop /
+  # Claude Code via streamable-HTTP transport. Lives in the same docker
+  # network as `api` so MCP→API calls are localhost-fast (no LAN hop).
+  # Each laptop's Claude config just points at http://192.168.2.34:${TRADINGAGENTS_MCP_PORT:-8002}/mcp —
+  # no per-laptop Python install needed.
+  mcp:
+    build:
+      context: .
+      dockerfile: Dockerfile.mcp
+    container_name: tradingagents-mcp
+    environment:
+      # Talk to the api service over the internal docker network. Hostname
+      # `api` resolves via docker DNS; port 8000 is the container-internal
+      # port (NOT the external 8001 mapping).
+      - TRADINGAGENTS_API_BASE=http://api:8000
+      - MCP_TRANSPORT=streamable-http
+      - MCP_HOST=0.0.0.0
+      - MCP_PORT=8002
+      # DNS-rebinding protection: MCP SDK ships with allowed_hosts locked
+      # to localhost. Override to accept the LAN address Claude clients
+      # connect through. Use '*' suffix to match any port; add more hosts
+      # comma-separated if you front this with a reverse proxy.
+      - MCP_ALLOWED_HOSTS=${MCP_ALLOWED_HOSTS:-192.168.2.34:*}
+      - MCP_ALLOWED_ORIGINS=${MCP_ALLOWED_ORIGINS:-http://192.168.2.34:*}
+    ports:
+      - "${TRADINGAGENTS_MCP_PORT:-8002}:8002"
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+
   # ---- Next.js web frontend (NEW primary UI) --------------------------
   # Connects to the api service. ``API_URL`` is the *server-side* address
   # the Next dev/standalone server uses for SSR; the browser hits the

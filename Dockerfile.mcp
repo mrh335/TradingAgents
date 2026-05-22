@@ -1,0 +1,40 @@
+# MCP server — exposes the TradingAgents webapp + paper trading to
+# Claude Desktop / Claude Code over streamable-HTTP transport.
+#
+# Stays small and dep-light: just the MCP SDK, httpx, and yfinance. Talks
+# to the api service on the internal docker network (TRADINGAGENTS_API_BASE
+# defaults to http://api:8000 — set in docker-compose).
+FROM python:3.13-slim
+
+# Avoid creating __pycache__ and force unbuffered stdout for clean container logs.
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    MCP_TRANSPORT=streamable-http \
+    MCP_HOST=0.0.0.0 \
+    MCP_PORT=8002
+
+WORKDIR /app
+
+# Install only what the MCP server needs. No build deps, no fastapi —
+# FastMCP brings its own ASGI wrapper.
+RUN pip install --no-cache-dir \
+    "mcp>=1.2.0" \
+    "httpx>=0.27" \
+    "yfinance>=0.2"
+
+# Copy the MCP server package source. The pyproject.toml is optional in
+# the image since we run via `python -m`, but copying it keeps the layout
+# identical to the dev tree so debugging from inside the container works.
+COPY mcp/pyproject.toml ./pyproject.toml
+COPY mcp/src/ ./src/
+
+ENV PYTHONPATH=/app/src
+
+EXPOSE 8002
+
+# Healthcheck: streamable-HTTP MCP doesn't have a vanilla GET /health, but
+# the root path returns a 4xx-with-body that proves the server is up.
+HEALTHCHECK --interval=30s --timeout=5s --retries=3 --start-period=15s \
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8002/mcp', timeout=4)" || exit 1
+
+CMD ["python", "-m", "tradingagents_mcp"]
