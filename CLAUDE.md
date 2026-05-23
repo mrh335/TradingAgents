@@ -306,6 +306,18 @@ the legacy fields (``entry_strategy``, ``stop_loss``, ``take_profit``,
     "P/E ratio": "Stock price divided by the past year of earnings per share. Lower is cheaper for the same earnings."
   },
 
+  "long_term_view": {
+    "thesis_summary": "NVDA dominates the AI compute stack — they design the chips, the networking, and the CUDA software layer that every major AI lab and cloud provider builds on. The structural advantage is data-center revenue growing 60%+ year over year with 73% gross margins, and a software moat that's hard to replicate.",
+    "core_position": "core_position",
+    "multi_year_horizon": "Expect 15-20% annual price growth over 3-5 years if hyperscaler capex stays elevated. The base case is data-center revenue compounding 25-35% per year; price will likely track that with some multiple compression as growth slows.",
+    "accumulation_plan": "Buy 1/3 today, 1/3 in 4 months, 1/3 in 8 months — dollar-cost averaging removes timing risk. Reasonable to also do lump sum since the position is small.",
+    "structural_risks": [
+      "AI capex turns out to be over-built and cloud providers slow purchases for 1-2 years",
+      "China export curbs widen to consumer-grade chips (currently ~20% of revenue)",
+      "A new chip architecture from a competitor (Google TPU, AMD MI300) takes meaningful market share"
+    ],
+    "review_cadence": "Quarterly after each earnings call, plus any major industry-wide news (e.g. AI bubble pop, China export changes)"
+  },
   "benchmark_view": "Likely to outperform SPY by 5–10% over the next 6
                      weeks if AI capex narrative holds; underperforms
                      hard in a tech selloff."

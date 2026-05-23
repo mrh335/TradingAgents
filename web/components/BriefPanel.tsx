@@ -3,11 +3,14 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Briefs } from "@/lib/api";
 import { Markdown } from "@/components/Markdown";
+import { mergeGlossary } from "@/lib/glossary";
+import { useMemo, type ReactNode } from "react";
 import type {
   Brief,
   EntryStep,
   ExitRule,
   KeyNumber,
+  LongTermView,
   Trigger,
 } from "@/lib/types";
 
@@ -276,7 +279,15 @@ export function BriefPanel({ runId }: { runId: string }) {
 
       {/* ─── Key risks ─── */}
       {b.key_risks && b.key_risks.length > 0 && (
-        <RisksTable rows={b.key_risks} glossary={glossary} />
+        <RisksTable
+          rows={b.key_risks}
+          glossary={glossary}
+          title={
+            b.long_term_view
+              ? "What could go wrong (short-term setbacks)"
+              : "What could go wrong"
+          }
+        />
       )}
 
       {/* ─── vs SPY ─── */}
@@ -285,6 +296,11 @@ export function BriefPanel({ runId }: { runId: string }) {
           <span className="text-muted">vs S&amp;P 500: </span>
           <RenderWithGlossary text={b.benchmark_view} glossary={glossary} />
         </div>
+      )}
+
+      {/* ─── Long-term-investor lens (v3) ─── */}
+      {b.long_term_view && (
+        <LongTermLens view={b.long_term_view} glossary={glossary} />
       )}
 
       {/* ─── Glossary footer ─── */}
@@ -522,13 +538,15 @@ function TriggersTable({
 function RisksTable({
   rows,
   glossary,
+  title = "What could go wrong",
 }: {
   rows: string[];
   glossary: Record<string, string>;
+  title?: string;
 }) {
   return (
     <section>
-      <div className="font-semibold text-sm mb-1">What could go wrong</div>
+      <div className="font-semibold text-sm mb-1">{title}</div>
       <ul className="text-sm space-y-1 list-disc list-inside text-muted">
         {rows.map((r, i) => (
           <li key={i}>
@@ -540,9 +558,132 @@ function RisksTable({
   );
 }
 
-// Renders text with any glossary terms turned into hoverable tooltips.
-// Linear scan, longest-match-first so "200-day SMA" wins over "SMA" if
-// both are defined.
+const CORE_POSITION_LABEL: Record<string, { label: string; tone: string; help: string }> = {
+  core_position: {
+    label: "Core holding",
+    tone: "text-success",
+    help: "Worth holding as a permanent part of your portfolio — don't sell on short-term noise.",
+  },
+  satellite: {
+    label: "Satellite",
+    tone: "text-accent",
+    help: "Worth holding but not core — could be cycled out for better opportunities later.",
+  },
+  avoid_long_term: {
+    label: "Not for long-term",
+    tone: "text-warning",
+    help: "Don't hold this for years. Could be a short-term trade, but better long-term plays exist elsewhere.",
+  },
+  unclear: {
+    label: "Unclear",
+    tone: "text-muted",
+    help: "The multi-year thesis isn't strong enough either way — needs more time or data.",
+  },
+};
+
+function LongTermLens({
+  view,
+  glossary,
+}: {
+  view: LongTermView;
+  glossary: Record<string, string>;
+}) {
+  const core = CORE_POSITION_LABEL[view.core_position] || {
+    label: view.core_position,
+    tone: "text-muted",
+    help: "",
+  };
+  return (
+    <section className="border-t-2 border-accent/40 pt-4 mt-4">
+      <div className="flex items-baseline gap-2 mb-2 flex-wrap">
+        <h2 className="text-lg font-semibold">For long-term investors</h2>
+        <span className="text-xs text-muted">
+          (1-3 year horizon — review quarterly, not daily)
+        </span>
+      </div>
+
+      {/* Thesis paragraph */}
+      <div className="text-sm mb-3">
+        <RenderWithGlossary text={view.thesis_summary} glossary={glossary} />
+      </div>
+
+      {/* Status row + key facts table */}
+      <table className="w-full text-sm bg-surface rounded overflow-hidden mb-3">
+        <tbody>
+          <tr>
+            <td className="py-1.5 px-3 text-muted w-1/3">Worth holding long-term?</td>
+            <td className="py-1.5 px-3">
+              <span
+                className={`font-semibold ${core.tone}`}
+                title={core.help}
+              >
+                {core.label}
+              </span>
+              <span className="text-xs text-muted ml-2">— {core.help}</span>
+            </td>
+          </tr>
+          <tr className="border-t border-border">
+            <td className="py-1.5 px-3 text-muted">Multi-year outlook</td>
+            <td className="py-1.5 px-3">
+              <RenderWithGlossary
+                text={view.multi_year_horizon}
+                glossary={glossary}
+              />
+            </td>
+          </tr>
+          {view.accumulation_plan && (
+            <tr className="border-t border-border">
+              <td className="py-1.5 px-3 text-muted">How to build position</td>
+              <td className="py-1.5 px-3">
+                <RenderWithGlossary
+                  text={view.accumulation_plan}
+                  glossary={glossary}
+                />
+              </td>
+            </tr>
+          )}
+          <tr className="border-t border-border">
+            <td className="py-1.5 px-3 text-muted">When to revisit</td>
+            <td className="py-1.5 px-3">
+              <RenderWithGlossary text={view.review_cadence} glossary={glossary} />
+            </td>
+          </tr>
+        </tbody>
+      </table>
+
+      {/* Structural risks — multi-year, not daily wiggles */}
+      {view.structural_risks && view.structural_risks.length > 0 && (
+        <div>
+          <div className="font-semibold text-sm mb-1">
+            What could break the multi-year story
+          </div>
+          <ul className="text-sm space-y-1 list-disc list-inside text-muted">
+            {view.structural_risks.map((r, i) => (
+              <li key={i}>
+                <RenderWithGlossary text={r} glossary={glossary} />
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      <p className="text-xs text-muted mt-3 italic">
+        Don&apos;t base long-term decisions on the daily-price tables above —
+        those are for active traders. This section is the right lens for
+        buy-and-hold investors who can&apos;t (or don&apos;t want to) trade
+        daily.
+      </p>
+    </section>
+  );
+}
+
+// Renders text with auto-detected glossary tooltips. Uses the merged
+// lookup: global finance glossary (lib/glossary.ts) + any brief-specific
+// terms the LLM included in jargon_glossary. Longest-match-first so
+// "200-day SMA" wins over "SMA" when both are defined.
+//
+// The `glossary` param is just the brief-specific overrides — global
+// terms are always available without the LLM having to know them.
 function RenderWithGlossary({
   text,
   glossary,
@@ -550,27 +691,43 @@ function RenderWithGlossary({
   text: string;
   glossary: Record<string, string>;
 }) {
+  const lookup = useMemo(() => mergeGlossary(glossary), [glossary]);
   if (!text) return null;
-  const terms = Object.keys(glossary).sort((a, b) => b.length - a.length);
-  if (terms.length === 0) return <>{text}</>;
+  const phrases = Array.from(lookup.keys()).sort(
+    (a, b) => b.length - a.length,
+  );
+  if (phrases.length === 0) return <>{text}</>;
 
-  // Build a single regex that matches any glossary term, case-insensitive,
-  // with word boundaries on alphanumeric edges. Escape regex chars.
-  const escaped = terms.map((t) => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
-  const re = new RegExp(`(${escaped.join("|")})`, "gi");
+  const escaped = phrases.map((p) =>
+    p.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"),
+  );
+  // Require non-alphanumeric on both edges so "pe" inside "pearl" doesn't match.
+  const pattern = `(?<![A-Za-z0-9])(${escaped.join("|")})(?![A-Za-z0-9])`;
+  let re: RegExp;
+  try {
+    re = new RegExp(pattern, "gi");
+  } catch {
+    return <>{text}</>;
+  }
 
-  const parts: (string | { term: string; def: string })[] = [];
+  const parts: ReactNode[] = [];
   let lastIdx = 0;
   let m: RegExpExecArray | null;
+  let key = 0;
   while ((m = re.exec(text)) !== null) {
     if (m.index > lastIdx) parts.push(text.slice(lastIdx, m.index));
-    // Find the canonical key (case-insensitive match)
     const matched = m[0];
-    const canonical = terms.find(
-      (t) => t.toLowerCase() === matched.toLowerCase(),
-    );
-    if (canonical) {
-      parts.push({ term: matched, def: glossary[canonical] });
+    const found = lookup.get(matched.toLowerCase());
+    if (found) {
+      parts.push(
+        <span
+          key={key++}
+          className="underline decoration-dotted decoration-accent cursor-help"
+          title={found.entry.definition}
+        >
+          {matched}
+        </span>,
+      );
     } else {
       parts.push(matched);
     }
@@ -578,21 +735,5 @@ function RenderWithGlossary({
   }
   if (lastIdx < text.length) parts.push(text.slice(lastIdx));
 
-  return (
-    <>
-      {parts.map((p, i) =>
-        typeof p === "string" ? (
-          <span key={i}>{p}</span>
-        ) : (
-          <span
-            key={i}
-            className="underline decoration-dotted decoration-accent cursor-help"
-            title={p.def}
-          >
-            {p.term}
-          </span>
-        ),
-      )}
-    </>
-  );
+  return <>{parts}</>;
 }

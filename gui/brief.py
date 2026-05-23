@@ -150,6 +150,73 @@ class KeyNumber(BaseModel):
     )
 
 
+class LongTermView(BaseModel):
+    """Long-term-investor lens — for people who can't (or don't want to)
+    change positions on a daily/weekly basis.
+
+    The rest of the brief is calibrated for active management — daily
+    closing prices, technical breakouts, trader-style staged entries.
+    This section steps back and asks: 'if I'm going to hold for 1-3
+    years and review quarterly, what's the story?'
+    """
+
+    thesis_summary: str = Field(
+        description=(
+            "Plain-English 2-3 sentence summary of why this company is "
+            "(or isn't) worth holding for years. Focus on the structural "
+            "business advantages, growth trajectory, and competitive moat. "
+            "No daily price levels. No 'tradeable levels'. Just: what's "
+            "the company, and is it durably good?"
+        )
+    )
+    core_position: str = Field(
+        description=(
+            "One of: 'core_position' (worth holding as a permanent part "
+            "of the portfolio), 'satellite' (worth holding but not core "
+            "— could be cycled out), 'avoid_long_term' (don't hold this "
+            "for years; better short-term trades elsewhere), 'unclear' "
+            "(thesis not strong enough either way). Be honest."
+        )
+    )
+    multi_year_horizon: str = Field(
+        description=(
+            "What you expect to happen on a multi-year view. Examples: "
+            "'Likely to compound 12-15% per year over 3-5 years if AI "
+            "spending stays on track', 'Mature business; expect 4-6% "
+            "annual price growth plus 2.8% dividend = ~7-9% total return'."
+        )
+    )
+    accumulation_plan: Optional[str] = Field(
+        default=None,
+        description=(
+            "For long-term investors: how to build the position WITHOUT "
+            "trying to time daily entries. Examples: 'Buy 1/3 today, 1/3 "
+            "in 6 months, 1/3 in 12 months — dollar-cost averaging', "
+            "'Lump sum is fine; valuation is reasonable and the position "
+            "is small'. Avoid daily-price triggers in this field."
+        ),
+    )
+    structural_risks: List[str] = Field(
+        default_factory=list,
+        description=(
+            "2-4 risks that would break the multi-year thesis — not daily "
+            "wiggles. Examples: 'Antitrust break-up of the company', "
+            "'Cloud commoditization eats into margins over 5 years', "
+            "'Founder-CEO succession risk'. Different from `key_risks` "
+            "which covers shorter-term setbacks."
+        ),
+    )
+    review_cadence: str = Field(
+        description=(
+            "When to revisit this position. Examples: 'Quarterly after "
+            "each earnings call', 'Annually unless a major news event', "
+            "'When the stock has moved more than ±25% from your average "
+            "cost basis'. Tells the user 'you don't need to look at this "
+            "every day'."
+        )
+    )
+
+
 class Brief(BaseModel):
     """Plain-English summary a non-expert can act on."""
 
@@ -277,7 +344,21 @@ class Brief(BaseModel):
             "last 200 trading days — a slow trend line.', 'P/E ratio': "
             "'Stock price divided by the past year of earnings per share.'}. "
             "The UI surfaces these as tooltips so the user can hover for the "
-            "meaning. Skip if there's no jargon in your brief (the goal)."
+            "meaning. Skip if there's no jargon in your brief (the goal). "
+            "NOTE: ~100 common terms are auto-defined globally — you only "
+            "need to add entries for ticker- or analysis-specific jargon."
+        ),
+    )
+    long_term_view: Optional[LongTermView] = Field(
+        default=None,
+        description=(
+            "Required for new briefs. The long-term-investor lens. Most of "
+            "this brief is calibrated for active management (daily prices, "
+            "technical breakouts, staged entries). This section is for "
+            "users who hold for years and review quarterly — a totally "
+            "different decision lens. ALWAYS populate this; even if the "
+            "underlying analysis is short-term-focused, you can infer the "
+            "multi-year story from the fundamentals."
         ),
     )
 
@@ -343,6 +424,27 @@ class Brief(BaseModel):
 
         risks_md = "\n".join(f"- {r.strip()}" for r in self.key_risks) or "_(none)_"
 
+        # Long-term-investor lens — separate decision frame for buy-and-hold
+        ltv = self.long_term_view
+        long_term_md = ""
+        if ltv:
+            struct_risks = "\n".join(f"- {r.strip()}" for r in ltv.structural_risks)
+            long_term_md = (
+                "\n#### For long-term investors (1-3 year horizon)\n\n"
+                f"**Thesis:** {ltv.thesis_summary.strip()}\n\n"
+                f"| Field | Value |\n|---|---|\n"
+                f"| Core holding? | `{ltv.core_position}` |\n"
+                f"| Multi-year outlook | {ltv.multi_year_horizon.strip()} |\n"
+                f"| Review cadence | {ltv.review_cadence.strip()} |\n"
+            )
+            if ltv.accumulation_plan:
+                long_term_md += f"| How to build position | {ltv.accumulation_plan.strip()} |\n"
+            if struct_risks:
+                long_term_md += (
+                    "\n**Structural risks (multi-year, not daily):**\n\n"
+                    + struct_risks + "\n"
+                )
+
         return (
             f"### {self.decision}\n\n"
             f"{plain_header}"
@@ -353,8 +455,9 @@ class Brief(BaseModel):
             f"{entry_md}"
             f"{exit_md}"
             f"{triggers_block}"
-            f"\n#### Key risks\n\n{risks_md}\n\n"
+            f"\n#### Key risks (shorter-term setbacks)\n\n{risks_md}\n\n"
             f"**vs S&P 500:** {self.benchmark_view.strip()}\n"
+            f"{long_term_md}"
         )
 
 
@@ -456,7 +559,31 @@ _PROMPT_HEADER = (
     "ALWAYS populate the structured table fields (entry_plan, exit_plan, "
     "key_numbers). Do not leave them null — they're the most important "
     "improvement in this brief format. Even if the analysis is thin, "
-    "make reasonable inferences and fill them in.\n"
+    "make reasonable inferences and fill them in.\n\n"
+    "## long_term_view (REQUIRED, separate lens)\n"
+    "Most of the brief is calibrated for an active trader who watches "
+    "daily closing prices. **Many users are long-term investors who can't "
+    "or won't change positions weekly.** The long_term_view section is "
+    "for them: a totally separate decision lens that asks 'if I hold this "
+    "for 1-3 years and review quarterly, is the story still good?'\n\n"
+    "Required fields in long_term_view:\n"
+    "- **thesis_summary** (2-3 sentences) — durable business story, NO "
+    "  daily prices, NO 'tradeable levels', just what the company is and "
+    "  why it's worth holding.\n"
+    "- **core_position** (one of: core_position / satellite / "
+    "  avoid_long_term / unclear) — Be honest. Many decent trades are "
+    "  NOT core holdings.\n"
+    "- **multi_year_horizon** — plain-English projection over 3-5 years.\n"
+    "- **accumulation_plan** — how to build the position WITHOUT trying "
+    "  to time daily entries (DCA = dollar-cost averaging is great here).\n"
+    "- **structural_risks** (2-4) — risks to the MULTI-YEAR thesis, not "
+    "  daily wiggles. Antitrust, secular disruption, succession.\n"
+    "- **review_cadence** — when to revisit (typically quarterly or "
+    "  annually). Reassures the user 'you don't need to look at this "
+    "  every day'.\n\n"
+    "Even if the upstream analysts focused on short-term technicals, "
+    "you can almost always infer the long-term story from the "
+    "fundamentals_report. Don't skip this field.\n"
 )
 
 

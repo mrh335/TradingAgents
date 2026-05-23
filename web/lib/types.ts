@@ -30,6 +30,20 @@ export type KeyNumber = {
   value: string;
 };
 
+export type LongTermView = {
+  thesis_summary: string;
+  core_position:
+    | "core_position"
+    | "satellite"
+    | "avoid_long_term"
+    | "unclear"
+    | string;
+  multi_year_horizon: string;
+  accumulation_plan?: string | null;
+  structural_risks: string[];
+  review_cadence: string;
+};
+
 export type Brief = {
   decision: string;
   action_plain?: string | null;
@@ -47,6 +61,8 @@ export type Brief = {
   exit_plan?: ExitRule[] | null;
   key_numbers?: KeyNumber[] | null;
   jargon_glossary?: Record<string, string> | null;
+  // v3 long-term-investor lens (2026-05-23+)
+  long_term_view?: LongTermView | null;
 };
 
 export type RunSummary = {
