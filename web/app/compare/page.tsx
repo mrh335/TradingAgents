@@ -4,7 +4,12 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Compare, type ModelCombo, type CompareListRow } from "@/lib/api";
+import {
+  Compare,
+  SettingsApi,
+  type ModelCombo,
+  type CompareListRow,
+} from "@/lib/api";
 
 // ──────────────────────────────────────────────────────────────────────
 // /compare — model A/B testing
@@ -17,8 +22,8 @@ import { Compare, type ModelCombo, type CompareListRow } from "@/lib/api";
 
 type ProviderModels = Record<string, { value: string; label: string }[]>;
 
-// Same catalog as /schedules + /run — keep in sync if you add models there.
-const MODEL_CATALOG: ProviderModels = {
+// Static catalog for hosted providers. Same as /schedules + /run.
+const STATIC_CATALOG: ProviderModels = {
   anthropic: [
     { value: "claude-opus-4-7", label: "Opus 4.7 — top tier" },
     { value: "claude-sonnet-4-6", label: "Sonnet 4.6 — balanced" },
@@ -40,7 +45,9 @@ const MODEL_CATALOG: ProviderModels = {
 };
 
 // Curated presets — common A/B questions a user might want to ask.
-const PRESETS: { label: string; combos: ModelCombo[] }[] = [
+// Note: presets reference STATIC models only; Ollama presets are
+// generated from the live catalog (see useMemo in the component).
+const STATIC_PRESETS: { label: string; combos: ModelCombo[] }[] = [
   {
     label: "Anthropic flagships (Opus vs Sonnet)",
     combos: [
@@ -73,6 +80,25 @@ const PRESETS: { label: string; combos: ModelCombo[] }[] = [
     ],
   },
 ];
+
+// Built dynamically once we know which Ollama models are installed.
+function ollamaPreset(ollamaModels: string[]): { label: string; combos: ModelCombo[] }[] {
+  if (ollamaModels.length === 0) return [];
+  const flagship =
+    ollamaModels.find((m) => m.includes("qwen2.5:14b")) ||
+    ollamaModels.find((m) => m.includes("qwen3")) ||
+    ollamaModels[0];
+  return [
+    {
+      label: `Opus vs Sonnet vs ${flagship} (free local)`,
+      combos: [
+        { provider: "anthropic", deep_model: "claude-opus-4-7", label: "Opus" },
+        { provider: "anthropic", deep_model: "claude-sonnet-4-6", label: "Sonnet" },
+        { provider: "ollama", deep_model: flagship, label: `Ollama: ${flagship}` },
+      ],
+    },
+  ];
+}
 
 function todayIso(): string {
   return new Date().toISOString().slice(0, 10);
@@ -108,6 +134,7 @@ export default function ComparePage() {
   const [ticker, setTicker] = useState("");
   const [tradeDate, setTradeDate] = useState(todayIso());
   const [analysisMode, setAnalysisMode] = useState<"fresh" | "incremental">("fresh");
+  const [executionMode, setExecutionMode] = useState<"server" | "queue">("server");
   const [notes, setNotes] = useState("");
   const [selected, setSelected] = useState<ModelCombo[]>([]);
 
@@ -116,6 +143,32 @@ export default function ComparePage() {
     queryFn: () => Compare.list(50),
     refetchInterval: 30_000,
   });
+
+  // Discover locally-installed Ollama models so they can be checked here.
+  const ollamaQ = useQuery({
+    queryKey: ["ollama-models"],
+    queryFn: () => SettingsApi.ollamaModels(),
+    retry: false, // don't hammer if Ollama isn't configured
+    staleTime: 60_000,
+  });
+
+  // Build the full catalog: static hosted providers + discovered Ollama.
+  const MODEL_CATALOG = useMemo<ProviderModels>(() => {
+    const cat: ProviderModels = { ...STATIC_CATALOG };
+    const ollamaModels = ollamaQ.data?.models ?? [];
+    if (ollamaModels.length > 0) {
+      cat.ollama = ollamaModels.map((m: any) => ({
+        value: m.name,
+        label: `${m.name}${m.size ? ` — ${(m.size / 1e9).toFixed(1)}GB` : ""}`,
+      }));
+    }
+    return cat;
+  }, [ollamaQ.data]);
+
+  const PRESETS = useMemo(() => {
+    const ollamaModels = (ollamaQ.data?.models ?? []).map((m: any) => m.name);
+    return [...STATIC_PRESETS, ...ollamaPreset(ollamaModels)];
+  }, [ollamaQ.data]);
 
   const createM = useMutation({
     mutationFn: (req: Parameters<typeof Compare.create>[0]) => Compare.create(req),
@@ -154,6 +207,7 @@ export default function ComparePage() {
       ticker: ticker.trim().toUpperCase(),
       trade_date: tradeDate,
       analysis_mode: analysisMode,
+      execution_mode: executionMode,
       combos: selected,
       notes: notes || undefined,
     });
@@ -214,6 +268,61 @@ export default function ComparePage() {
           </div>
         </div>
 
+        {/* Execution mode toggle */}
+        <div className="bg-surface p-3 rounded">
+          <label className="label">How to execute</label>
+          <div className="space-y-2 text-sm">
+            <label className="flex items-start gap-2 cursor-pointer">
+              <input
+                type="radio"
+                checked={executionMode === "server"}
+                onChange={() => setExecutionMode("server")}
+                className="mt-1"
+              />
+              <div>
+                <div className="font-semibold">
+                  Run server-side now (recommended)
+                </div>
+                <div className="text-xs text-muted">
+                  Each combo kicks off immediately on the NAS using the
+                  specific model you picked. Anthropic / OpenAI / Google
+                  combos cost API tokens; Ollama combos are{" "}
+                  <strong>free</strong> (run on your local Ollama at{" "}
+                  {ollamaQ.data?.url ?? "(not configured)"}). This is the
+                  only way to get an honest A/B comparison — each model
+                  actually used.
+                </div>
+              </div>
+            </label>
+            <label className="flex items-start gap-2 cursor-pointer">
+              <input
+                type="radio"
+                checked={executionMode === "queue"}
+                onChange={() => setExecutionMode("queue")}
+                className="mt-1"
+              />
+              <div>
+                <div className="font-semibold">
+                  Queue for Claude Desktop drainer
+                </div>
+                <div className="text-xs text-muted">
+                  Creates run_queue items at priority 10. The Windows
+                  Scheduled Task / CD drainer picks them up.{" "}
+                  <strong className="text-warning">
+                    Caveat: CD can&apos;t be programmatically forced to
+                    use a specific model
+                  </strong>{" "}
+                  — it always uses whatever your chat is currently set to.
+                  So a queue-mode comparison of Opus vs Sonnet would
+                  actually run BOTH with whatever model CD is in. Useful
+                  only for sanity-checks with one model. For real A/B
+                  testing, use server-side.
+                </div>
+              </div>
+            </label>
+          </div>
+        </div>
+
         {/* Presets */}
         <div>
           <label className="label">Quick-start presets</label>
@@ -245,7 +354,14 @@ export default function ComparePage() {
           <div className="space-y-3">
             {Object.entries(MODEL_CATALOG).map(([provider, models]) => (
               <div key={provider} className="bg-surface p-3 rounded">
-                <div className="text-xs uppercase text-muted mb-1">{provider}</div>
+                <div className="text-xs uppercase text-muted mb-1">
+                  {provider}
+                  {provider === "ollama" && (
+                    <span className="ml-2 text-success normal-case">
+                      free + local
+                    </span>
+                  )}
+                </div>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-1">
                   {models.map((m) => {
                     const checked = selected.some(
@@ -271,6 +387,12 @@ export default function ComparePage() {
                 </div>
               </div>
             ))}
+            {!ollamaQ.data && (
+              <p className="text-xs text-muted italic">
+                (Ollama not detected — to use local models in comparisons,
+                configure ollama_base_url in /settings)
+              </p>
+            )}
           </div>
           {selected.length < 2 && (
             <p className="text-xs text-warning mt-2">

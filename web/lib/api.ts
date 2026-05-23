@@ -1093,12 +1093,15 @@ export type CompareCreateRequest = {
   trade_date?: string;
   analysis_mode?: "fresh" | "incremental";
   combos: ModelCombo[];
+  execution_mode?: "server" | "queue";
   notes?: string;
 };
 
 export type CompareCreateResponse = {
   comparison_id: string;
   queue_ids: string[];
+  run_ids: string[];
+  execution_mode: "server" | "queue";
   ticker: string;
   trade_date: string;
   combo_count: number;

@@ -71,12 +71,29 @@ class CompareCreateRequest(BaseModel):
         min_length=2, max_length=6,
         description="2-6 model combos to compare against the same data",
     )
+    execution_mode: str = Field(
+        default="server",
+        description=(
+            "'server' (recommended): launch each combo immediately on the "
+            "server-side runner_pool using the per-combo provider+model. "
+            "Anthropic/OpenAI combos cost API tokens; Ollama is free + local. "
+            "'queue': create run_queue items for Claude Desktop / Windows "
+            "Task drainer to pick up. NOTE: CD cannot be programmatically "
+            "told which model to use — it always uses whatever model your "
+            "chat session is currently set to, so queue-mode comparisons "
+            "of multiple Anthropic models will all run with the same CD "
+            "model. Useful for sanity-checking; not useful for real A/B "
+            "testing across models."
+        ),
+    )
     notes: Optional[str] = Field(default=None, max_length=500)
 
 
 class CompareCreateResponse(BaseModel):
     comparison_id: str
     queue_ids: List[str]
+    run_ids: List[str]
+    execution_mode: str
     ticker: str
     trade_date: str
     combo_count: int
@@ -85,11 +102,89 @@ class CompareCreateResponse(BaseModel):
 @router.post("", response_model=CompareCreateResponse)
 def create_comparison(req: CompareCreateRequest) -> CompareCreateResponse:
     """Submit a comparison. Returns a comparison_id you can use to fetch
-    /compare/{id} and watch the side-by-side build as each model finishes."""
+    /compare/{id} and watch the side-by-side build as each combo finishes.
+
+    Execution mode 'server' (default) kicks each combo off immediately via
+    the framework's runner_pool with the per-combo provider+model — this
+    is the ONLY way to get a fair multi-model comparison because the
+    runner respects whichever provider you specified. CD can't be
+    programmatically forced to a specific model, so queue-mode is only
+    useful for 'what does my current CD setup say'.
+    """
+    if req.execution_mode not in ("server", "queue"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"invalid execution_mode {req.execution_mode!r}; must be 'server' or 'queue'",
+        )
+
     trade_date = req.trade_date or date.today().isoformat()
     comparison_id = storage.new_comparison_id()
 
     queue_ids: List[str] = []
+    run_ids: List[str] = []
+
+    if req.execution_mode == "server":
+        # Server-side: kick off each combo immediately via runner_pool.
+        # Each pool.start creates a run_id; we tag each new run with
+        # comparison_id so /compare/{id} can group them.
+        from service.runner_pool import pool
+
+        for combo in req.combos:
+            label = combo.label or f"{combo.provider}/{combo.deep_model}"
+            run_id = storage.new_run_id()
+            # Stamp the comparison_id on the run row immediately so the
+            # group view can find it even before the run completes.
+            storage.create_run(
+                run_id=run_id,
+                ticker=req.ticker.upper(),
+                trade_date=trade_date,
+                provider=combo.provider,
+                deep_model=combo.deep_model,
+                quick_model=combo.quick_model or combo.deep_model,
+                debate_rounds=1,
+                risk_rounds=1,
+                vendors={},
+            )
+            storage.attach_comparison_id(run_id, comparison_id)
+
+            job = {
+                "ticker": req.ticker.upper(),
+                "trade_date": trade_date,
+                "llm_provider": combo.provider,
+                "deep_think_llm": combo.deep_model,
+                "quick_think_llm": combo.quick_model or combo.deep_model,
+                "max_debate_rounds": 1,
+                "max_risk_discuss_rounds": 1,
+                "analysis_mode": req.analysis_mode,
+                "comparison_id": comparison_id,
+                "comparison_label": label,
+            }
+            try:
+                pool.start(run_id=run_id, job=job)
+                run_ids.append(run_id)
+            except Exception as e:
+                logger.warning(f"compare: pool.start failed for {label}: {e}")
+                # Mark this run as failed but keep the others going
+                try:
+                    storage.finalize_run(
+                        run_id,
+                        decision=None,
+                        log_path=None,
+                        error=f"pool.start failed: {e}",
+                    )
+                except Exception:
+                    pass
+        return CompareCreateResponse(
+            comparison_id=comparison_id,
+            queue_ids=[],
+            run_ids=run_ids,
+            execution_mode="server",
+            ticker=req.ticker.upper(),
+            trade_date=trade_date,
+            combo_count=len(req.combos),
+        )
+
+    # Queue mode: create run_queue items for the external drainer.
     for combo in req.combos:
         label = combo.label or f"{combo.provider}/{combo.deep_model}"
         options = {
@@ -107,13 +202,15 @@ def create_comparison(req: CompareCreateRequest) -> CompareCreateResponse:
             mode="analyze",
             options=options,
             requested_by="web-ui:compare",
-            priority=10,  # bump above scheduler items so comparisons run promptly
+            priority=10,
         )
         queue_ids.append(queued["id"])
 
     return CompareCreateResponse(
         comparison_id=comparison_id,
         queue_ids=queue_ids,
+        run_ids=[],
+        execution_mode="queue",
         ticker=req.ticker.upper(),
         trade_date=trade_date,
         combo_count=len(req.combos),
