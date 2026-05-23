@@ -27,7 +27,9 @@ const KIND_COLORS: Record<RestrictionKind, string> = {
 };
 
 function todayIso(): string {
-  return new Date().toISOString().slice(0, 10);
+  // Local-day YYYY-MM-DD. Avoid toISOString().slice — that's UTC and
+  // rolls over to tomorrow ~5pm PT.
+  return new Date().toLocaleDateString("sv-SE");
 }
 
 function fmtStatus(r: Restriction): string {

@@ -47,7 +47,7 @@ export default function DashboardPage() {
     mutationFn: (ticker: string) =>
       RunQueue.create({
         ticker,
-        trade_date: new Date().toISOString().slice(0, 10),
+        trade_date: new Date().toLocaleDateString("sv-SE"), // local YYYY-MM-DD
         mode: "analyze",
         options: {
           provider: "anthropic",

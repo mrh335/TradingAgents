@@ -33,7 +33,9 @@ function fmtUsd(n: number | null): string {
 }
 
 function todayIso(): string {
-  return new Date().toISOString().slice(0, 10);
+  // Local-day YYYY-MM-DD. Avoid toISOString().slice — that's UTC and
+  // rolls over to tomorrow ~5pm PT.
+  return new Date().toLocaleDateString("sv-SE");
 }
 
 export default function TradesPage() {

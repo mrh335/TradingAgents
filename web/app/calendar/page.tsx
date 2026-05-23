@@ -21,7 +21,10 @@ function isoMonthEdge(d: Date, kind: "start" | "end"): string {
     x.setMonth(x.getMonth() + 1);
     x.setDate(0);
   }
-  return x.toISOString().slice(0, 10);
+  // Local YYYY-MM-DD (sv-SE formats this way natively). Avoid
+  // toISOString — that's UTC and shifts by ~8h in PT, which makes
+  // the month-edge date wrong for the calendar grid.
+  return x.toLocaleDateString("sv-SE");
 }
 
 export default function CalendarPage() {
@@ -55,7 +58,8 @@ export default function CalendarPage() {
       out.push({ iso: "", day: 0, events: [], in_month: false });
     }
     for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
-      const iso = d.toISOString().slice(0, 10);
+      // sv-SE = local YYYY-MM-DD. toISOString here would tz-shift the day.
+      const iso = d.toLocaleDateString("sv-SE");
       out.push({ iso, day: d.getDate(), events: byDate[iso] ?? [], in_month: true });
     }
     while (out.length % 7 !== 0) out.push({ iso: "", day: 0, events: [], in_month: false });

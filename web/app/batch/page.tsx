@@ -83,7 +83,10 @@ const MODEL_CATALOG: Record<string, { value: string; label: string }[]> = {
 const OTHER_SENTINEL = "__other__";
 
 function todayIso(): string {
-  return new Date().toISOString().slice(0, 10);
+  // Local-day YYYY-MM-DD. sv-SE formats as YYYY-MM-DD natively.
+  // Avoid toISOString().slice — that's UTC and rolls over to tomorrow
+  // ~5pm PT.
+  return new Date().toLocaleDateString("sv-SE");
 }
 
 function parseTickers(raw: string): string[] {
@@ -158,8 +161,9 @@ export default function BatchListPage() {
   const [queueProgress, setQueueProgress] = useState<{ done: number; total: number } | null>(null);
   const queueAll = useMutation({
     mutationFn: async (req: BatchCreateRequest) => {
+      // Local timestamp for batch labels (sv-SE = local YYYY-MM-DD HH:mm)
       const batchLabel = (req.name ?? "").trim() ||
-        `batch-${new Date().toISOString().slice(0, 16).replace(/[-T:]/g, "")}`;
+        `batch-${new Date().toLocaleString("sv-SE").replace(/[-T: ]/g, "")}`;
       const failed: { ticker: string; error: string }[] = [];
       let ok = 0;
       setQueueProgress({ done: 0, total: req.tickers.length });

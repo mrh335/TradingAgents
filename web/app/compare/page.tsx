@@ -101,7 +101,9 @@ function ollamaPreset(ollamaModels: string[]): { label: string; combos: ModelCom
 }
 
 function todayIso(): string {
-  return new Date().toISOString().slice(0, 10);
+  // Local-day YYYY-MM-DD (sv-SE locale formats this way natively).
+  // Avoid toISOString().slice — that's UTC and rolls over at ~5pm PT.
+  return new Date().toLocaleDateString("sv-SE");
 }
 
 function fmtTs(s: string | null): string {

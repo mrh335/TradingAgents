@@ -111,7 +111,7 @@ export default function ToolsPage() {
     mutationFn: () =>
       RunQueue.create({
         ticker: tool.takesTicker ? ticker.toUpperCase() : "_PORTFOLIO",
-        trade_date: new Date().toISOString().slice(0, 10),
+        trade_date: new Date().toLocaleDateString("sv-SE"), // local YYYY-MM-DD
         mode: selected as any,
         options: {
           analysis_mode: analysisMode,
