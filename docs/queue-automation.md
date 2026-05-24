@@ -37,10 +37,13 @@ Setup: nothing — already works. The skill at
 queue" / "drain the queue" trigger that walks `/run-queue/pending` and
 routes each item by mode.
 
-### Path 2: Windows Scheduled Task → `claude -p`
+### Path 2: Windows Scheduled Task → `claude -p` (silent)
 
 What it is: a local Windows task that runs `claude -p "process the queue"`
-every 30 minutes while the laptop is on.
+every 30 minutes while the laptop is on. **Silent** — the installer
+wraps the CLI in a VBScript launcher (`%LOCALAPPDATA%\TradingAgents\drain.vbs`)
+so no console window appears. Output goes to `drain.log` next to the
+wrapper for post-hoc debugging.
 
 What it covers: all modes including heavy `analyze` runs.
 
