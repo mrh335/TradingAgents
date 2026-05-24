@@ -2,7 +2,7 @@
 
 import { useParams } from "next/navigation";
 import Link from "next/link";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Compare, type CompareRowState } from "@/lib/api";
 
 // ──────────────────────────────────────────────────────────────────────
@@ -53,6 +53,7 @@ function fmtCostUsd(tokensIn: number | null, tokensOut: number | null): string |
 export default function ComparisonDetailPage() {
   const params = useParams<{ id: string }>();
   const cid = params.id;
+  const qc = useQueryClient();
 
   const q = useQuery({
     queryKey: ["compare", cid],
@@ -65,9 +66,19 @@ export default function ComparisonDetailPage() {
     },
   });
 
+  const retry = useMutation({
+    mutationFn: () => Compare.retryFailed(cid),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["compare", cid] }),
+  });
+
   if (q.isLoading) return <div className="text-muted">Loading comparison…</div>;
   if (!q.data) return <div className="text-danger">Comparison not found.</div>;
   const d = q.data;
+
+  // Count failed/cancelled rows so we can show the retry button when relevant.
+  const failedCount = d.rows.filter(
+    (r) => r.queue_status === "error" || r.queue_status === "cancelled",
+  ).length;
 
   return (
     <div className="space-y-6">
@@ -87,6 +98,22 @@ export default function ComparisonDetailPage() {
           {STATUS_LABEL[d.overall_status]} ·{" "}
           {d.agreement.completed_runs}/{d.agreement.total_runs} runs done
         </p>
+        {failedCount > 0 && (
+          <div className="mt-2">
+            <button
+              className="btn text-xs"
+              onClick={() => retry.mutate()}
+              disabled={retry.isPending}
+              title="Reset the failed/cancelled queue items back to pending. The server-side drainer will pick them up — Ollama items dispatch within ~5 min, paid providers need auto-drain on."
+            >
+              {retry.isPending
+                ? "Resetting…"
+                : retry.isSuccess
+                  ? `Reset ${retry.data.items_reset} items — drainer picks them up next tick`
+                  : `↻ Retry ${failedCount} failed run${failedCount === 1 ? "" : "s"}`}
+            </button>
+          </div>
+        )}
       </header>
 
       {/* ─── Agreement summary ─── */}

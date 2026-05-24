@@ -292,31 +292,198 @@ HANDLERS = {
 
 
 # ──────────────────────────────────────────────────────────────────────
+# Non-anthropic analyze dispatcher — picks up queue items where
+# options.provider is set to something CD's skill can't handle (ollama,
+# openai, google). Dispatches via the framework's runner_pool which
+# supports all providers. Critical for /compare submissions in queue
+# mode: CD claims items it thinks it can handle, rejects the rest;
+# without this drainer, ollama compare runs sit stuck forever.
+# ──────────────────────────────────────────────────────────────────────
+
+# Providers that CD's skill DOES handle natively (uses its own brain).
+# Anything not in this set needs the framework runner_pool path.
+CD_HANDLED_PROVIDERS = {"anthropic"}
+
+# Providers the server drainer can run via runner_pool. Ollama is FREE
+# (local execution); others use the corresponding API key from .env.
+SERVER_DISPATCHABLE_PROVIDERS = {"ollama", "openai", "google", "anthropic"}
+
+# Providers that are free to dispatch (no API tokens). The drainer
+# handles these regardless of the auto_drain_enabled flag.
+FREE_PROVIDERS = {"ollama"}
+
+
+def _handle_analyze_via_pool(item: Dict[str, Any]) -> tuple[bool, Optional[str]]:
+    """Dispatch a queue item with mode=analyze to the framework's
+    runner_pool. Used for non-anthropic provider items that CD can't
+    handle (e.g. ollama in compare submissions)."""
+    try:
+        opts = json.loads(item.get("options_json") or "{}")
+    except (TypeError, ValueError):
+        opts = {}
+
+    provider = (opts.get("provider") or "").lower()
+    if provider not in SERVER_DISPATCHABLE_PROVIDERS:
+        return False, f"server drainer can't dispatch provider={provider!r}"
+
+    deep_model = opts.get("deep_model")
+    quick_model = opts.get("quick_model") or deep_model
+    if not deep_model:
+        return False, "missing options.deep_model — can't dispatch"
+
+    ticker = item["ticker"]
+    trade_date = item["trade_date"]
+    comparison_id = opts.get("comparison_id")
+
+    try:
+        from service.runner_pool import pool
+    except ImportError as e:
+        return False, f"runner_pool unavailable: {e}"
+
+    # Create a new run row + dispatch via pool.start (same path as
+    # /compare server-side and the /run page).
+    run_id = storage.new_run_id()
+    try:
+        storage.create_run(
+            run_id=run_id,
+            ticker=ticker,
+            trade_date=trade_date,
+            provider=provider,
+            deep_model=deep_model,
+            quick_model=quick_model,
+            debate_rounds=int(opts.get("debate_rounds", 1) or 1),
+            risk_rounds=int(opts.get("risk_rounds", 1) or 1),
+            vendors={},
+        )
+        # Tag with comparison_id immediately so the side-by-side view
+        # finds this run as soon as it starts.
+        if comparison_id:
+            storage.attach_comparison_id(run_id, str(comparison_id))
+
+        job = {
+            "ticker": ticker,
+            "trade_date": trade_date,
+            "llm_provider": provider,
+            "deep_think_llm": deep_model,
+            "quick_think_llm": quick_model,
+            "max_debate_rounds": int(opts.get("debate_rounds", 1) or 1),
+            "max_risk_discuss_rounds": int(opts.get("risk_rounds", 1) or 1),
+            "analysis_mode": opts.get("analysis_mode", "fresh"),
+            "comparison_id": comparison_id,
+            "comparison_label": opts.get("comparison_label"),
+        }
+        pool.start(run_id=run_id, job=job)
+    except Exception as e:
+        # Try to mark the run as failed; the queue item is also marked
+        # failed by the caller.
+        try:
+            storage.finalize_run(run_id, decision=None, log_path=None, error=str(e))
+        except Exception:
+            pass
+        return False, f"pool.start failed: {e}"
+
+    # Link the queue item to the run, and mark the queue complete. The
+    # run itself is now in-flight and will land separately.
+    try:
+        storage.complete_queue_item(item["id"], result_run_id=run_id)
+    except Exception as e:
+        logger.warning(f"complete_queue_item failed for {item['id']}: {e}")
+    return True, None
+
+
+# ──────────────────────────────────────────────────────────────────────
 # Tick + run loop
 # ──────────────────────────────────────────────────────────────────────
 
 
 def _tick() -> Dict[str, Any]:
-    """One drain pass. Returns a summary for logging."""
+    """One drain pass. Returns a summary for logging.
+
+    Three classes of work, with different gating:
+
+    1. **Free analyze dispatch (always on)** — analyze items where
+       options.provider is in FREE_PROVIDERS (currently just `ollama`).
+       No API tokens, no opt-in flag. The compare feature relies on this
+       so ollama runs land even if the user hasn't toggled auto-drain.
+
+    2. **Light modes (opt-in + Anthropic key)** — ask_portfolio +
+       earnings_summary. Cents per call on Haiku; gated by both
+       auto_drain_enabled and ANTHROPIC_API_KEY.
+
+    3. **Paid analyze dispatch (opt-in + key)** — analyze items where
+       options.provider is in SERVER_DISPATCHABLE_PROVIDERS but not in
+       FREE_PROVIDERS (openai, google, paid anthropic). Costs API tokens
+       for the underlying framework call; gated like the light modes.
+    """
     summary: Dict[str, Any] = {
         "checked": 0, "processed": 0, "failed": 0, "skipped_no_key": 0,
-        "skipped_disabled": 0,
+        "skipped_disabled": 0, "free_analyze_processed": 0,
     }
-    if not _auto_drain_enabled():
-        summary["skipped_disabled"] += 1
-        return summary
-    if not _api_key():
-        summary["skipped_no_key"] += 1
-        logger.warning("queue_drainer: ANTHROPIC_API_KEY not set; idle")
-        return summary
 
     worker = _worker_id()
-    # Reclaim stale claims (CD crashed mid-process > 30 min ago)
+
+    # Reclaim stale claims (CD crashed mid-process > 30 min ago).
+    # Always-on — independent of other gating.
     try:
         storage.reclaim_stale_queue_items(older_than_seconds=1800)
     except Exception as e:
         logger.warning(f"reclaim_stale failed: {e}")
 
+    # ── 1. Free analyze dispatch — always on ──
+    try:
+        pending = storage.list_queue(status="pending", limit=50)
+    except Exception as e:
+        logger.warning(f"list_queue failed: {e}")
+        pending = []
+
+    for item in pending:
+        if item.get("mode") != "analyze":
+            continue
+        try:
+            opts = json.loads(item.get("options_json") or "{}")
+        except (TypeError, ValueError):
+            continue
+        provider = (opts.get("provider") or "").lower()
+        if provider not in FREE_PROVIDERS:
+            continue
+        # Atomically claim by id so we don't race CD or another drainer.
+        with storage._conn() as c:
+            cur = c.execute(
+                """UPDATE run_queue SET status='claimed', claimed_by=?, claimed_at=?
+                   WHERE id=? AND status='pending'""",
+                (worker + ":free-analyze", storage._now(), item["id"]),
+            )
+            if cur.rowcount == 0:
+                continue  # someone else got it
+        # Re-read the claimed row
+        item = storage.get_queue_item(item["id"]) or item
+        summary["checked"] += 1
+        try:
+            ok, err = _handle_analyze_via_pool(item)
+            if ok:
+                summary["processed"] += 1
+                summary["free_analyze_processed"] += 1
+            else:
+                storage.fail_queue_item(item["id"], error=err or "free dispatch failed")
+                summary["failed"] += 1
+        except Exception as e:
+            logger.exception(f"free analyze dispatch crashed on {item['id']}: {e}")
+            try:
+                storage.fail_queue_item(item["id"], error=f"dispatch crash: {e}")
+            except Exception:
+                pass
+            summary["failed"] += 1
+
+    # ── Everything else needs the opt-in flag + API key ──
+    if not _auto_drain_enabled():
+        summary["skipped_disabled"] += 1
+        return summary
+    if not _api_key():
+        summary["skipped_no_key"] += 1
+        logger.warning("queue_drainer: ANTHROPIC_API_KEY not set; idle (light modes + paid analyze)")
+        return summary
+
+    # ── 2. Light modes (ask_portfolio, earnings_summary) ──
     for mode in LIGHT_MODES:
         try:
             claimed = storage.claim_queue_items(claimed_by=worker, max_items=5, mode=mode)
@@ -345,6 +512,52 @@ def _tick() -> Dict[str, Any]:
                 except Exception:
                     pass
                 summary["failed"] += 1
+
+    # ── 3. Paid analyze dispatch (openai/google) ──
+    # Only when the user has explicitly enabled it (auto_drain_enabled)
+    # and has the relevant key — these calls cost API tokens.
+    try:
+        pending = storage.list_queue(status="pending", limit=50)
+    except Exception as e:
+        pending = []
+    for item in pending:
+        if item.get("mode") != "analyze":
+            continue
+        try:
+            opts = json.loads(item.get("options_json") or "{}")
+        except (TypeError, ValueError):
+            continue
+        provider = (opts.get("provider") or "").lower()
+        # Skip anthropic (CD handles it) and free providers (handled above).
+        if provider in CD_HANDLED_PROVIDERS or provider in FREE_PROVIDERS:
+            continue
+        if provider not in SERVER_DISPATCHABLE_PROVIDERS:
+            continue
+        with storage._conn() as c:
+            cur = c.execute(
+                """UPDATE run_queue SET status='claimed', claimed_by=?, claimed_at=?
+                   WHERE id=? AND status='pending'""",
+                (worker + ":paid-analyze", storage._now(), item["id"]),
+            )
+            if cur.rowcount == 0:
+                continue
+        item = storage.get_queue_item(item["id"]) or item
+        summary["checked"] += 1
+        try:
+            ok, err = _handle_analyze_via_pool(item)
+            if ok:
+                summary["processed"] += 1
+            else:
+                storage.fail_queue_item(item["id"], error=err or "paid dispatch failed")
+                summary["failed"] += 1
+        except Exception as e:
+            logger.exception(f"paid analyze dispatch crashed on {item['id']}: {e}")
+            try:
+                storage.fail_queue_item(item["id"], error=f"dispatch crash: {e}")
+            except Exception:
+                pass
+            summary["failed"] += 1
+
     return summary
 
 

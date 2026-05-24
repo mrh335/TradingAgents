@@ -431,6 +431,45 @@ class CompareListRow(BaseModel):
     created_at: str
 
 
+@router.post("/{comparison_id}/retry-failed")
+def retry_failed(comparison_id: str) -> Dict[str, Any]:
+    """Reset failed/cancelled queue items in this comparison back to
+    pending. Useful when CD (or any drainer) rejected an item because it
+    couldn't handle its provider — once the server-side drainer is
+    updated to dispatch that provider, this endpoint un-sticks the
+    stuck items so the new drainer can pick them up.
+
+    Returns the count of items reset."""
+    items = storage.list_queue_items_for_comparison(comparison_id)
+    if not items:
+        raise HTTPException(
+            status_code=404,
+            detail=f"no comparison with id {comparison_id!r}",
+        )
+    reset = 0
+    with storage._conn() as c:
+        for item in items:
+            if item["status"] in ("error", "cancelled"):
+                cur = c.execute(
+                    """UPDATE run_queue
+                       SET status='pending', claimed_by=NULL, claimed_at=NULL,
+                           completed_at=NULL, error_message=NULL, result_run_id=NULL
+                       WHERE id=?""",
+                    (item["id"],),
+                )
+                if cur.rowcount > 0:
+                    reset += 1
+    return {
+        "comparison_id": comparison_id,
+        "items_reset": reset,
+        "message": (
+            f"Reset {reset} failed/cancelled item(s) to pending. The "
+            "server-side drainer will pick them up within ~5 minutes "
+            "(or immediately for ollama provider items)."
+        ),
+    }
+
+
 @router.get("", response_model=List[CompareListRow])
 def list_comparisons(limit: int = 50) -> List[CompareListRow]:
     """List recent comparison groups, newest first. Scans the run_queue

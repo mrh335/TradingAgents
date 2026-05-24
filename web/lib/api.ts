@@ -1176,6 +1176,12 @@ export const Compare = {
     request<CompareDetailResponse>(`/compare/${comparison_id}`),
   list: (limit = 50) =>
     request<CompareListRow[]>(`/compare?limit=${limit}`),
+  retryFailed: (comparison_id: string) =>
+    request<{
+      comparison_id: string;
+      items_reset: number;
+      message: string;
+    }>(`/compare/${comparison_id}/retry-failed`, { method: "POST" }),
 };
 
 // ---- Ask (portfolio Q&A — queue or sync) --------------------------------
