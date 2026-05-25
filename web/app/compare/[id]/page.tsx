@@ -42,11 +42,52 @@ function fmtNum(n: number | null): string {
   return String(n);
 }
 
-function fmtCostUsd(tokensIn: number | null, tokensOut: number | null): string | null {
+// Rough per-1M-token pricing by provider/model family. Used for relative
+// cost cues, NOT billing — actual cost depends on tier + cache hits and
+// is on your provider invoice. Returns null when we don't know the
+// pricing (instead of guessing, which used to mislabel Ollama runs as
+// costing money when they're actually free + local).
+function pricingFor(provider: string | null, model: string | null): { inUsd: number; outUsd: number } | null {
+  if (!provider) return null;
+  const p = provider.toLowerCase();
+  const m = (model ?? "").toLowerCase();
+  if (p === "ollama") return null;           // free + local — return null → "free"
+  if (p === "anthropic") {
+    if (m.includes("opus")) return { inUsd: 15, outUsd: 75 };
+    if (m.includes("sonnet")) return { inUsd: 3, outUsd: 15 };
+    if (m.includes("haiku")) return { inUsd: 1, outUsd: 5 };
+    return { inUsd: 3, outUsd: 15 };
+  }
+  if (p === "openai") {
+    if (m.includes("gpt-5")) return { inUsd: 10, outUsd: 30 };
+    if (m.includes("o1-mini")) return { inUsd: 3, outUsd: 12 };
+    if (m.includes("o1")) return { inUsd: 15, outUsd: 60 };
+    if (m.includes("gpt-4o-mini")) return { inUsd: 0.15, outUsd: 0.6 };
+    if (m.includes("gpt-4o")) return { inUsd: 2.5, outUsd: 10 };
+    if (m.includes("gpt-4")) return { inUsd: 10, outUsd: 30 };
+    return { inUsd: 2.5, outUsd: 10 };
+  }
+  if (p === "google") {
+    if (m.includes("flash")) return { inUsd: 0.075, outUsd: 0.3 };
+    return { inUsd: 1.25, outUsd: 5 };
+  }
+  return null;
+}
+
+function fmtCostUsd(
+  tokensIn: number | null,
+  tokensOut: number | null,
+  provider: string | null,
+  model: string | null,
+): string | null {
   if (!tokensIn && !tokensOut) return null;
-  // Rough Anthropic Sonnet pricing assumption: $3/M in, $15/M out.
-  // Per-model accuracy isn't critical — this is a relative cost cue.
-  const cost = ((tokensIn ?? 0) / 1_000_000) * 3 + ((tokensOut ?? 0) / 1_000_000) * 15;
+  const p = (provider ?? "").toLowerCase();
+  if (p === "ollama") return "free (local)";
+  const price = pricingFor(provider, model);
+  if (!price) return null;
+  const cost =
+    ((tokensIn ?? 0) / 1_000_000) * price.inUsd +
+    ((tokensOut ?? 0) / 1_000_000) * price.outUsd;
   return `~$${cost.toFixed(3)}`;
 }
 
@@ -179,9 +220,10 @@ export default function ComparisonDetailPage() {
         understand what each model weighted differently.
         <br />
         <br />
-        <strong>About tokens:</strong> the cost estimate is rough (Sonnet
-        pricing). Real cost depends on the actual model — Haiku is ~3x cheaper,
-        Opus ~5x more expensive than the shown number.
+        <strong>About cost:</strong> per-model pricing is now applied (Haiku
+        / Sonnet / Opus / GPT-5 / etc. each priced separately); the dollar
+        figure is a relative cue, not your bill. Ollama runs show{" "}
+        <em>free (local)</em> since they execute on your own hardware.
       </div>
     </div>
   );
@@ -312,8 +354,11 @@ function ModelCard({
             <>
               <br />
               {fmtNum(row.tokens_in)} in / {fmtNum(row.tokens_out)} out
-              {fmtCostUsd(row.tokens_in, row.tokens_out) && (
-                <> ({fmtCostUsd(row.tokens_in, row.tokens_out)})</>
+              {fmtCostUsd(row.tokens_in, row.tokens_out, row.provider, row.deep_model) && (
+                <>
+                  {" "}
+                  ({fmtCostUsd(row.tokens_in, row.tokens_out, row.provider, row.deep_model)})
+                </>
               )}
             </>
           )}

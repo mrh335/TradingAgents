@@ -81,13 +81,38 @@ const STATIC_PRESETS: { label: string; combos: ModelCombo[] }[] = [
   },
 ];
 
+// Vision-only Ollama models — these can describe images but cannot
+// reason about text-only stock data. They produced empty briefs in
+// the user's 5/25 NVDA comparison (no decision, no tldr, no triggers).
+// Filter them out of the picker so they're never selectable.
+//
+// Match strategy: substring match on the model name (case-insensitive).
+// Covers both the bare model name (e.g. "llava") and any quantization
+// suffix (e.g. "llava:7b", "llava:13b").
+const OLLAMA_VISION_EXCLUDES = [
+  "llava",
+  "bakllava",
+  "moondream",
+  "minicpm-v",
+  "llava-llama",
+  "llava-phi",
+  "cogvlm",
+  "obsidian",   // tiny vision model
+];
+
+function isOllamaTextOnlyModel(name: string): boolean {
+  const lower = name.toLowerCase();
+  return !OLLAMA_VISION_EXCLUDES.some((v) => lower.includes(v));
+}
+
 // Built dynamically once we know which Ollama models are installed.
 function ollamaPreset(ollamaModels: string[]): { label: string; combos: ModelCombo[] }[] {
-  if (ollamaModels.length === 0) return [];
+  const textModels = ollamaModels.filter(isOllamaTextOnlyModel);
+  if (textModels.length === 0) return [];
   const flagship =
-    ollamaModels.find((m) => m.includes("qwen2.5:14b")) ||
-    ollamaModels.find((m) => m.includes("qwen3")) ||
-    ollamaModels[0];
+    textModels.find((m) => m.includes("qwen2.5:14b")) ||
+    textModels.find((m) => m.includes("qwen3")) ||
+    textModels[0];
   return [
     {
       label: `Opus vs Sonnet vs ${flagship} (free local)`,
@@ -155,9 +180,13 @@ export default function ComparePage() {
   });
 
   // Build the full catalog: static hosted providers + discovered Ollama.
+  // Vision-only Ollama models are filtered out — they can't reason about
+  // text-only stock data and produced empty briefs in past comparisons.
   const MODEL_CATALOG = useMemo<ProviderModels>(() => {
     const cat: ProviderModels = { ...STATIC_CATALOG };
-    const ollamaModels = ollamaQ.data?.models ?? [];
+    const ollamaModels = (ollamaQ.data?.models ?? []).filter((m: any) =>
+      isOllamaTextOnlyModel(m.name),
+    );
     if (ollamaModels.length > 0) {
       cat.ollama = ollamaModels.map((m: any) => ({
         value: m.name,
@@ -168,7 +197,9 @@ export default function ComparePage() {
   }, [ollamaQ.data]);
 
   const PRESETS = useMemo(() => {
-    const ollamaModels = (ollamaQ.data?.models ?? []).map((m: any) => m.name);
+    const ollamaModels = (ollamaQ.data?.models ?? [])
+      .filter((m: any) => isOllamaTextOnlyModel(m.name))
+      .map((m: any) => m.name);
     return [...STATIC_PRESETS, ...ollamaPreset(ollamaModels)];
   }, [ollamaQ.data]);
 
@@ -359,9 +390,31 @@ export default function ComparePage() {
                 <div className="text-xs uppercase text-muted mb-1">
                   {provider}
                   {provider === "ollama" && (
-                    <span className="ml-2 text-success normal-case">
-                      free + local
-                    </span>
+                    <>
+                      <span className="ml-2 text-success normal-case">
+                        free + local
+                      </span>
+                      {(() => {
+                        // Note when vision-only models were filtered out so the
+                        // user knows why their llava/moondream aren't listed.
+                        const all = ollamaQ.data?.models ?? [];
+                        const filtered = all.filter((m: any) => isOllamaTextOnlyModel(m.name));
+                        const hidden = all.length - filtered.length;
+                        if (hidden <= 0) return null;
+                        const hiddenNames = all
+                          .filter((m: any) => !isOllamaTextOnlyModel(m.name))
+                          .map((m: any) => m.name)
+                          .join(", ");
+                        return (
+                          <span
+                            className="ml-2 text-muted normal-case lowercase text-[10px]"
+                            title={`Vision-only models hidden (can't analyze text): ${hiddenNames}`}
+                          >
+                            ({hidden} vision-only model{hidden === 1 ? "" : "s"} hidden)
+                          </span>
+                        );
+                      })()}
+                    </>
                   )}
                 </div>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-1">

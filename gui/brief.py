@@ -624,10 +624,27 @@ def generate_brief(state: Dict[str, Any], meta: Dict[str, Any]) -> Brief:
     """Run the LLM call to produce a structured brief.
 
     Doesn't touch any cache. Callers should normally use ``get_brief``.
+
+    Two-tier strategy (2026-05-25):
+
+    1. **Strict structured-output path** (fast + reliable for big models)
+       — uses LangChain's ``with_structured_output(Brief)`` which forces
+       the LLM to comply with the full Pydantic schema. Works on
+       Anthropic / OpenAI / Gemini frontier models.
+
+    2. **Markdown-fallback path** (for small / local models that can't
+       comply with strict JSON schemas) — asks the LLM to emit a
+       markdown-structured response we can regex-parse into approximate
+       fields. Triggered when the strict path errors out OR returns a
+       brief with the required ``decision`` field empty.
+
+    Local Ollama models (qwen2.5:7b, etc.) tended to silently fail the
+    strict path and leave the brief with no tldr / triggers / risks.
+    Now they get a working brief — just with fewer structured-table
+    fields filled in.
     """
     bootstrap_env()
     llm = _build_llm()
-    structured = llm.with_structured_output(Brief)
 
     user_prompt = (
         f"Ticker: {meta.get('ticker', '?')}\n"
@@ -635,8 +652,203 @@ def generate_brief(state: Dict[str, Any], meta: Dict[str, Any]) -> Brief:
         f"Final decision (one-word): {meta.get('decision') or '—'}\n\n"
         + _state_text_for_brief(state)
     )
+    full_prompt = _PROMPT_HEADER + "\n\n" + user_prompt
 
-    return structured.invoke(_PROMPT_HEADER + "\n\n" + user_prompt)
+    # Tier 1: try strict structured output.
+    structured_err: Optional[str] = None
+    try:
+        structured = llm.with_structured_output(Brief)
+        brief = structured.invoke(full_prompt)
+        # Sanity check: a "successful" structured response that has no
+        # decision means the LLM produced a malformed result that
+        # LangChain swallowed silently. Treat that as a failure so we
+        # fall through to the markdown path.
+        if brief and brief.decision and brief.tldr:
+            return brief
+        structured_err = "structured response missing required fields"
+    except Exception as e:
+        structured_err = str(e)
+
+    # Tier 2: markdown-fallback for models that can't comply with the
+    # strict schema. Ask for a SIMPLE markdown layout we can regex.
+    return _generate_brief_markdown_fallback(llm, full_prompt, meta, structured_err)
+
+
+# ---------------------------------------------------------------------------
+# Markdown-fallback path — used when strict structured output fails
+# ---------------------------------------------------------------------------
+
+_MARKDOWN_FALLBACK_PROMPT = (
+    "\n\n---\n\n"
+    "**Format instruction (mandatory):** respond in EXACTLY the markdown\n"
+    "skeleton below. Do not add any other sections. Keep each section\n"
+    "concise; if a field doesn't apply, write 'n/a' but DON'T omit the\n"
+    "header.\n\n"
+    "## Decision\n"
+    "<ONE WORD: Buy | Overweight | Hold | Underweight | Sell>\n\n"
+    "## Action (plain English)\n"
+    "<3-8 everyday words, e.g. 'buy a starter position'>\n\n"
+    "## TL;DR\n"
+    "<2 sentences max; no Wall Street jargon>\n\n"
+    "## Timeframe\n"
+    "<e.g. '4-6 weeks'>\n\n"
+    "## Position size\n"
+    "<e.g. '4-5% of portfolio, 3 separate purchases'>\n\n"
+    "## Entry\n"
+    "<2-3 sentences on when/how to buy>\n\n"
+    "## Stop loss\n"
+    "<price + condition>\n\n"
+    "## Take profit\n"
+    "<price + condition>\n\n"
+    "## Triggers\n"
+    "- IF <condition> THEN <action>\n"
+    "- IF <condition> THEN <action>\n"
+    "- IF <condition> THEN <action>\n\n"
+    "## Key risks\n"
+    "- <risk 1>\n"
+    "- <risk 2>\n"
+    "- <risk 3>\n\n"
+    "## Benchmark view\n"
+    "<one sentence on vs SPY over the timeframe>\n"
+)
+
+
+def _generate_brief_markdown_fallback(
+    llm: Any, full_prompt: str, meta: Dict[str, Any], failure_reason: str,
+) -> Brief:
+    """Ask the LLM to emit markdown we can regex-parse into a Brief.
+
+    Used when strict structured output errors or yields a blank result.
+    Always returns SOMETHING — at minimum a Brief with the required
+    fields filled by sensible fallbacks based on ``meta``. Never raises.
+    """
+    import logging
+    log = logging.getLogger(__name__)
+    log.info("brief: structured output failed (%s); falling back to markdown", failure_reason[:200])
+
+    try:
+        from langchain_core.messages import HumanMessage
+        prompt_with_format = full_prompt + _MARKDOWN_FALLBACK_PROMPT
+        response = llm.invoke(prompt_with_format)
+        text = response.content if hasattr(response, "content") else str(response)
+    except Exception as e:
+        log.warning("brief: markdown-fallback LLM call also failed: %s", e)
+        text = ""
+
+    return _parse_markdown_to_brief(text or "", meta)
+
+
+def _parse_markdown_to_brief(text: str, meta: Dict[str, Any]) -> Brief:
+    """Regex out the markdown sections the fallback prompt asks for.
+
+    Tolerant of: missing sections (fills with sensible default), extra
+    text outside sections (ignored), case variations in headers, bullet
+    styles (-, *, •), and triggers written as 'if X then Y' or
+    'condition: X / action: Y'.
+    """
+    import re
+
+    def _section(name: str) -> str:
+        """Extract the body of a `## {name}` section, trimmed."""
+        m = re.search(
+            rf"^##\s*{re.escape(name)}\s*\n(.+?)(?=\n##\s|\Z)",
+            text, re.IGNORECASE | re.MULTILINE | re.DOTALL,
+        )
+        return (m.group(1).strip() if m else "")
+
+    raw_decision = _section("Decision").split("\n")[0].strip()
+    # Map common variants to the canonical 5-tier.
+    decision = _normalize_decision(raw_decision) or (
+        meta.get("decision") or "Hold"
+    )
+    action_plain = _section("Action (plain English)") or _section("Action") or None
+    tldr = _section("TL;DR") or _section("TLDR") or (
+        f"Analysis decision: {decision}. (Auto-generated fallback — the local "
+        f"model couldn't produce a full structured brief.)"
+    )
+    timeframe = _section("Timeframe") or "4-6 weeks (unspecified)"
+    position_size = _section("Position size") or "unspecified"
+    entry = _section("Entry") or _section("Entry strategy") or "n/a"
+    stop = _section("Stop loss") or "n/a"
+    take = _section("Take profit") or "n/a"
+    benchmark = _section("Benchmark view") or _section("Benchmark") or "unspecified"
+
+    # Triggers — accept a few formats.
+    triggers: List[Trigger] = []
+    trigger_block = _section("Triggers")
+    for line in trigger_block.splitlines():
+        line = line.strip().lstrip("-•* ").strip()
+        if not line:
+            continue
+        # Match 'IF X THEN Y' (case insensitive) — preferred shape.
+        m = re.match(r"^if\s+(.+?)\s+then\s+(.+)$", line, re.IGNORECASE)
+        if m:
+            triggers.append(Trigger(condition=m.group(1).strip(), action=m.group(2).strip()))
+            continue
+        # Match 'X → Y' / 'X -> Y'
+        m = re.match(r"^(.+?)\s*(?:→|->)\s*(.+)$", line)
+        if m:
+            triggers.append(Trigger(condition=m.group(1).strip(), action=m.group(2).strip()))
+            continue
+        # Best-effort: split on first colon if it looks like 'condition: action'
+        if ":" in line:
+            cond, _, act = line.partition(":")
+            triggers.append(Trigger(condition=cond.strip(), action=act.strip()))
+            continue
+        # Otherwise treat as a one-sided trigger (action only)
+        triggers.append(Trigger(condition=line, action="review the position"))
+
+    if not triggers:
+        triggers = [Trigger(
+            condition="No specific triggers extracted from the analysis",
+            action="Review the underlying reports before acting",
+        )]
+
+    risks: List[str] = []
+    risk_block = _section("Key risks") or _section("Risks")
+    for line in risk_block.splitlines():
+        line = line.strip().lstrip("-•* ").strip()
+        if line:
+            risks.append(line)
+    if not risks:
+        risks = ["No specific risks extracted — review the underlying reports"]
+
+    return Brief(
+        decision=decision,
+        action_plain=action_plain,
+        tldr=tldr,
+        timeframe=timeframe,
+        position_size=position_size,
+        entry_strategy=entry,
+        stop_loss=stop,
+        take_profit=take,
+        triggers=triggers,
+        key_risks=risks,
+        benchmark_view=benchmark,
+        # v2 structured fields left None — fallback path only produces prose
+    )
+
+
+def _normalize_decision(raw: str) -> Optional[str]:
+    """Map common decision-word variants to the canonical 5-tier schema."""
+    if not raw:
+        return None
+    lower = raw.lower().strip().rstrip(".:,")
+    # Strip surrounding markdown emphasis like **Buy**
+    lower = lower.strip("*_ ")
+    if lower in ("buy", "strong buy", "accumulate", "bullish", "long"):
+        return "Buy"
+    if lower in ("overweight", "add", "increase"):
+        return "Overweight"
+    if lower in ("hold", "neutral", "wait", "watch", "maintain"):
+        return "Hold"
+    if lower in ("underweight", "reduce", "trim"):
+        return "Underweight"
+    if lower in ("sell", "exit", "short", "avoid"):
+        return "Sell"
+    # Take the first word if multi-word
+    first = lower.split()[0] if lower.split() else ""
+    return _normalize_decision(first) if first and first != lower else None
 
 
 # ---------------------------------------------------------------------------
