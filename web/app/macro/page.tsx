@@ -1,7 +1,13 @@
 "use client";
 
 import { useQuery } from "@tanstack/react-query";
-import { Macro, type MacroPoint, type SectorRow } from "@/lib/api";
+import {
+  Macro,
+  Regime,
+  type MacroPoint,
+  type SectorRow,
+  type RegimePerformanceRow,
+} from "@/lib/api";
 
 // ──────────────────────────────────────────────────────────────────────
 // Macro dashboard — cross-asset regime snapshot + sector rotation.
@@ -250,6 +256,9 @@ export default function MacroPage() {
         )}
       </section>
 
+      {/* Markov + HMM regime section */}
+      <RegimeSection />
+
       <div className="card text-xs text-muted">
         <strong>Sources:</strong> yfinance daily closes for all series. The
         regime tag is a heuristic on VIX level (under 12 = complacent, 12-18 =
@@ -259,5 +268,317 @@ export default function MacroPage() {
         for most series.
       </div>
     </div>
+  );
+}
+
+// ───────────────────────────────────────────────────────────────────────
+// Regime section — combines all 3 tiers in a single panel:
+//   tier 1: current regime card (VIX + 200d-SMA classification)
+//   tier 2: transition matrix + stationary distribution + 30d forecast
+//   tier 3: HMM-fitted comparison
+// + framework hit rate per regime (joins to historical runs)
+// ───────────────────────────────────────────────────────────────────────
+
+const REGIME_ROW_LABEL: Record<string, string> = {
+  CALM_BULL: "Calm bull",
+  VOLATILE_BULL: "Volatile bull",
+  VOLATILE_BEAR: "Volatile bear",
+  CALM_BEAR: "Calm bear",
+};
+
+const REGIME_ROW_TONE: Record<string, string> = {
+  CALM_BULL: "text-success",
+  VOLATILE_BULL: "text-warning",
+  VOLATILE_BEAR: "text-danger",
+  CALM_BEAR: "text-muted",
+};
+
+function regimeCellColor(p: number): string {
+  // Probability heatmap: 0 = invisible bg, 1 = strong accent
+  const v = Math.max(0, Math.min(1, p));
+  if (v > 0.5) return "bg-accent/40";
+  if (v > 0.25) return "bg-accent/20";
+  if (v > 0.1) return "bg-accent/10";
+  return "";
+}
+
+function RegimeSection() {
+  const snap = useQuery({
+    queryKey: ["regime-snapshot"],
+    queryFn: () => Regime.snapshot(),
+    refetchInterval: 60 * 60_000,
+  });
+  const hmm = useQuery({
+    queryKey: ["regime-hmm"],
+    queryFn: () => Regime.hmm(4),
+    refetchInterval: 24 * 60 * 60_000,
+  });
+  const perf = useQuery({
+    queryKey: ["regime-perf", 30, 365],
+    queryFn: () => Regime.byRunPerformance(30, 365),
+    refetchInterval: 60 * 60_000,
+  });
+
+  return (
+    <section className="space-y-3">
+      <h2 className="text-lg font-semibold">Market regime (Markov + HMM)</h2>
+
+      {/* ── Tier 1: current regime card ── */}
+      {snap.data?.available && snap.data.current_regime && (
+        <div
+          className={`card border-l-4 ${
+            REGIME_ROW_TONE[snap.data.current_regime] === "text-success"
+              ? "border-l-success"
+              : REGIME_ROW_TONE[snap.data.current_regime] === "text-warning"
+                ? "border-l-warning"
+                : REGIME_ROW_TONE[snap.data.current_regime] === "text-danger"
+                  ? "border-l-danger"
+                  : "border-l-muted"
+          }`}
+        >
+          <div className="flex items-baseline gap-3 flex-wrap">
+            <span className="text-xs uppercase tracking-wider text-muted">
+              Current regime (rule-based)
+            </span>
+            <span
+              className={`text-2xl font-bold ${REGIME_ROW_TONE[snap.data.current_regime]}`}
+            >
+              {snap.data.current_label}
+            </span>
+            <span className="text-xs text-muted">
+              SPY {snap.data.current_spy?.toFixed(2)} ·{" "}
+              {snap.data.current_sma_200 && snap.data.current_spy && (
+                <>
+                  {snap.data.current_spy > snap.data.current_sma_200 ? "above" : "below"}{" "}
+                  200d SMA ({snap.data.current_sma_200.toFixed(2)})
+                </>
+              )}{" "}
+              · VIX {snap.data.current_vix?.toFixed(2)}
+            </span>
+          </div>
+          {snap.data.current_blurb && (
+            <p className="text-sm mt-2">{snap.data.current_blurb}</p>
+          )}
+        </div>
+      )}
+
+      {/* ── Tier 2: transition matrix + stationary + forecast ── */}
+      {snap.data?.available && snap.data.transition_matrix.length > 0 && (
+        <>
+          <div className="card overflow-x-auto">
+            <div className="font-semibold text-sm mb-2">
+              Transition probabilities (day → day)
+            </div>
+            <p className="text-xs text-muted mb-3">
+              Rows = today&apos;s regime. Columns = tomorrow&apos;s regime.
+              Cells show the historical probability of moving from row →
+              column in one trading day. Diagonal probability = stickiness
+              (how often the regime persists).
+            </p>
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="text-left text-muted">
+                  <th className="py-1 pr-2">from \ to</th>
+                  {snap.data.regime_order.map((r) => (
+                    <th key={r} className="text-center px-2 py-1">
+                      {REGIME_ROW_LABEL[r] ?? r}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {snap.data.transition_matrix.map((row, i) => (
+                  <tr key={i} className="border-t border-border">
+                    <td className={`py-1 pr-2 font-semibold ${REGIME_ROW_TONE[snap.data!.regime_order[i]]}`}>
+                      {REGIME_ROW_LABEL[snap.data!.regime_order[i]] ?? snap.data!.regime_order[i]}
+                    </td>
+                    {row.map((p, j) => (
+                      <td
+                        key={j}
+                        className={`text-center px-2 py-1 tabular-nums ${regimeCellColor(p)} ${i === j ? "font-semibold" : ""}`}
+                        title={`${snap.data!.regime_order[i]} → ${snap.data!.regime_order[j]}: ${(p * 100).toFixed(1)}%`}
+                      >
+                        {(p * 100).toFixed(0)}%
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            {/* Stationary distribution */}
+            <div className="card">
+              <div className="font-semibold text-sm mb-2">
+                Long-run time in each regime (stationary)
+              </div>
+              <p className="text-xs text-muted mb-2">
+                What % of trading days the market spends in each regime over a
+                very long horizon. From the eigenvector of the transition
+                matrix at eigenvalue 1.
+              </p>
+              <table className="w-full text-sm">
+                <tbody>
+                  {snap.data.regime_order.map((r) => {
+                    const p = snap.data!.stationary[r] ?? 0;
+                    return (
+                      <tr key={r} className="border-t border-border first:border-t-0">
+                        <td className={`py-1.5 ${REGIME_ROW_TONE[r]}`}>
+                          {REGIME_ROW_LABEL[r] ?? r}
+                        </td>
+                        <td className="py-1.5 text-right tabular-nums">
+                          {(p * 100).toFixed(1)}%
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+
+            {/* 30-day forecast */}
+            <div className="card">
+              <div className="font-semibold text-sm mb-2">
+                30-day forecast (from current state)
+              </div>
+              <p className="text-xs text-muted mb-2">
+                Probability of being in each regime 30 trading days from
+                now, given today&apos;s state. Matrix^30 from the current
+                state vector.
+              </p>
+              <table className="w-full text-sm">
+                <tbody>
+                  {snap.data.regime_order.map((r) => {
+                    const p = snap.data!.forecast_30d[r] ?? 0;
+                    return (
+                      <tr key={r} className="border-t border-border first:border-t-0">
+                        <td className={`py-1.5 ${REGIME_ROW_TONE[r]}`}>
+                          {REGIME_ROW_LABEL[r] ?? r}
+                        </td>
+                        <td className="py-1.5 text-right tabular-nums">
+                          {(p * 100).toFixed(1)}%
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </>
+      )}
+
+      {/* ── Tier 3: HMM ── */}
+      {hmm.data?.available ? (
+        <div className="card">
+          <div className="font-semibold text-sm mb-1">
+            HMM (Hidden Markov Model) — data-driven regimes
+          </div>
+          <div className="text-xs text-muted mb-3">
+            A {hmm.data.n_states}-state GaussianHMM fit (Baum-Welch / EM)
+            on (SPY daily log return, VIX level) over {hmm.data.n_days_observed}{" "}
+            trading days. States are auto-labeled by mean return + variance,
+            then mapped to the same 4 canonical regimes as tier 1 for
+            comparison.{" "}
+            <strong>
+              HMM and rule-based agreement:{" "}
+              {hmm.data.tier1_agreement_pct !== null
+                ? `${hmm.data.tier1_agreement_pct}%`
+                : "—"}
+            </strong>
+            {" "}of days. Disagreements are usually the HMM detecting a regime
+            shift slightly before the rule-based threshold triggers (or vice
+            versa).
+          </div>
+          <div className="text-xs">
+            <strong>Current HMM regime:</strong>{" "}
+            <span className={REGIME_ROW_TONE[hmm.data.current_regime ?? ""]}>
+              {REGIME_ROW_LABEL[hmm.data.current_regime ?? ""] ?? hmm.data.current_regime}
+            </span>
+          </div>
+        </div>
+      ) : hmm.isLoading ? (
+        <div className="card text-sm text-muted">
+          Fitting HMM (~5-10s on cold cache, then cached 24h)…
+        </div>
+      ) : (
+        <div className="card text-sm text-warning">
+          HMM unavailable: {hmm.data?.error ?? "unknown"}
+        </div>
+      )}
+
+      {/* ── Framework hit rate stratified by regime ── */}
+      {perf.data && perf.data.rows.length > 0 && (
+        <div className="card">
+          <div className="font-semibold text-sm mb-1">
+            Framework hit rate by regime (last {perf.data.lookback_days} days)
+          </div>
+          <p className="text-xs text-muted mb-3">
+            For every completed run with a +{perf.data.window_days}d horizon
+            reached, joined to the regime that was active on its trade_date.
+            <strong> Baseline (un-stratified):</strong>{" "}
+            {perf.data.baseline_hit_rate_pct ?? "—"}% hit rate ·{" "}
+            {perf.data.baseline_mean_alpha_pct?.toFixed(2) ?? "—"}% mean alpha.
+            Regimes where the framework outperforms the baseline are where it
+            actually adds value — down-weight conviction in the others.
+          </p>
+          <table className="w-full text-sm">
+            <thead className="text-left text-xs uppercase text-muted">
+              <tr>
+                <th className="py-2">Regime</th>
+                <th className="text-right">Runs</th>
+                <th className="text-right">Hit rate</th>
+                <th className="text-right">vs baseline</th>
+                <th className="text-right">Mean alpha</th>
+                <th>Decision mix</th>
+              </tr>
+            </thead>
+            <tbody>
+              {perf.data.rows.map((r: RegimePerformanceRow) => {
+                const delta =
+                  r.hit_rate_pct !== null && perf.data!.baseline_hit_rate_pct !== null
+                    ? r.hit_rate_pct - perf.data!.baseline_hit_rate_pct
+                    : null;
+                const deltaTone =
+                  delta === null
+                    ? "text-muted"
+                    : delta > 5
+                      ? "text-success font-semibold"
+                      : delta < -5
+                        ? "text-danger font-semibold"
+                        : "text-muted";
+                return (
+                  <tr key={r.regime} className="border-t border-border">
+                    <td className={`py-1.5 font-semibold ${REGIME_ROW_TONE[r.regime]}`}>
+                      {REGIME_ROW_LABEL[r.regime] ?? r.regime}
+                    </td>
+                    <td className="text-right tabular-nums">{r.n_runs}</td>
+                    <td className="text-right tabular-nums">
+                      {r.hit_rate_pct !== null ? `${r.hit_rate_pct}%` : "—"}
+                    </td>
+                    <td className={`text-right tabular-nums ${deltaTone}`}>
+                      {delta !== null
+                        ? `${delta > 0 ? "+" : ""}${delta.toFixed(1)}pp`
+                        : "—"}
+                    </td>
+                    <td className={`text-right tabular-nums ${(r.mean_alpha_pct ?? 0) > 0 ? "text-success" : (r.mean_alpha_pct ?? 0) < 0 ? "text-danger" : "text-muted"}`}>
+                      {r.mean_alpha_pct !== null
+                        ? `${r.mean_alpha_pct > 0 ? "+" : ""}${r.mean_alpha_pct.toFixed(2)}%`
+                        : "—"}
+                    </td>
+                    <td className="text-xs text-muted">
+                      {Object.entries(r.decisions)
+                        .map(([d, n]) => `${d}: ${n}`)
+                        .join(" · ") || "—"}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </section>
   );
 }

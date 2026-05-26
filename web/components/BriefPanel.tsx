@@ -1,7 +1,7 @@
 "use client";
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Briefs } from "@/lib/api";
+import { Briefs, Regime } from "@/lib/api";
 import { Markdown } from "@/components/Markdown";
 import { mergeGlossary } from "@/lib/glossary";
 import { useMemo, type ReactNode } from "react";
@@ -229,6 +229,9 @@ export function BriefPanel({ runId }: { runId: string }) {
           </button>
         </div>
       </div>
+
+      {/* ─── Regime context badge ─── */}
+      <RegimeBadge runId={runId} />
 
       {/* ─── Quick facts strip ─── */}
       <div className="grid grid-cols-2 md:grid-cols-2 gap-3 text-sm bg-surface rounded p-3">
@@ -736,4 +739,87 @@ function RenderWithGlossary({
   if (lastIdx < text.length) parts.push(text.slice(lastIdx));
 
   return <>{parts}</>;
+}
+
+
+// ──────────────────────────────────────────────────────────────────────
+// RegimeBadge — calibration context on every brief.
+//
+// Surfaces "this recommendation was made in {regime}; framework's
+// historical hit rate in this regime is {X}% vs {baseline}%".
+// Tells the user to up-weight or down-weight conviction based on
+// regime, without changing the underlying recommendation.
+// ──────────────────────────────────────────────────────────────────────
+
+const REGIME_BORDER_TONE: Record<string, string> = {
+  CALM_BULL: "border-l-success",
+  VOLATILE_BULL: "border-l-warning",
+  VOLATILE_BEAR: "border-l-danger",
+  CALM_BEAR: "border-l-muted",
+};
+
+function RegimeBadge({ runId }: { runId: string }) {
+  const q = useQuery({
+    queryKey: ["regime-for-run", runId],
+    queryFn: () => Regime.forRun(runId),
+    enabled: !!runId,
+    staleTime: 60 * 60_000,  // 1h — regime data is stable
+  });
+
+  if (q.isLoading || !q.data || !q.data.regime) return null;
+
+  const d = q.data;
+  const border = REGIME_BORDER_TONE[d.regime!] ?? "border-l-muted";
+
+  // Compute the conviction adjustment based on hit-rate delta.
+  let adjustment: ReactNode = null;
+  if (d.regime_hit_rate_pct !== null && d.baseline_hit_rate_pct !== null) {
+    const delta = d.regime_hit_rate_pct - d.baseline_hit_rate_pct;
+    if (delta >= 5) {
+      adjustment = (
+        <span className="text-success font-semibold">
+          ↑ Up-weight conviction — framework excels in this regime (+{delta.toFixed(0)}pp vs baseline)
+        </span>
+      );
+    } else if (delta <= -5) {
+      adjustment = (
+        <span className="text-danger font-semibold">
+          ↓ Down-weight conviction — framework underperforms in this regime ({delta.toFixed(0)}pp vs baseline)
+        </span>
+      );
+    } else {
+      adjustment = (
+        <span className="text-muted">
+          Framework performance in this regime is near baseline ({delta > 0 ? "+" : ""}{delta.toFixed(0)}pp)
+        </span>
+      );
+    }
+  }
+
+  return (
+    <div className={`card border-l-4 ${border} text-sm`}>
+      <div className="flex items-baseline gap-3 flex-wrap">
+        <span className="text-xs uppercase tracking-wider text-muted">
+          Market regime
+        </span>
+        <span className="font-semibold">{d.regime_label ?? d.regime}</span>
+        {d.regime_hit_rate_pct !== null && (
+          <span className="text-xs text-muted">
+            framework hit rate in this regime:{" "}
+            <strong>{d.regime_hit_rate_pct}%</strong>
+            {d.baseline_hit_rate_pct !== null && (
+              <> (baseline: {d.baseline_hit_rate_pct}%)</>
+            )}
+            {d.regime_calls_count !== null && d.regime_calls_count > 0 && (
+              <> over {d.regime_calls_count} historical calls</>
+            )}
+          </span>
+        )}
+      </div>
+      {adjustment && <div className="mt-1.5 text-xs">{adjustment}</div>}
+      {d.regime_blurb && (
+        <div className="text-xs text-muted mt-1.5">{d.regime_blurb}</div>
+      )}
+    </div>
+  );
 }

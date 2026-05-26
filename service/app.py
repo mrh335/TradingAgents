@@ -44,6 +44,7 @@ from service.routers import (
     planner,
     portfolio,
     portfolio_metrics as portfolio_metrics_router,
+    regime as regime_router,
     restrictions as restrictions_router,
     risk as risk_router,
     run_queue as run_queue_router,
@@ -187,6 +188,7 @@ app.include_router(news_alerts_router.router)
 app.include_router(holders_router.router)
 app.include_router(portfolio_metrics_router.router)
 app.include_router(macro_router.router)
+app.include_router(regime_router.router)
 app.include_router(earnings_router.router)
 app.include_router(ask_router.router)
 app.include_router(compare_router.router)

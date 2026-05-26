@@ -679,11 +679,26 @@ class WalkForwardOverall(BaseModel):
     last_trade_date: Optional[str] = None
 
 
+class RegimeStratifiedSummary(BaseModel):
+    """Per-regime breakdown of the walk-forward strategy. Populated only
+    when stratify_by_regime=true. Tells you which market regimes the
+    framework actually adds value in."""
+    regime: str
+    n_trades: int
+    n_trades_active: int                       # excludes Hold
+    cumulative_strategy_pct: float             # sum of contributions in this regime
+    cumulative_spy_pct: float                  # SPY same-days in this regime
+    cumulative_alpha_pct: float                # strategy - SPY in this regime
+    mean_alpha_pct: Optional[float] = None     # per-trade average alpha in this regime
+    hit_rate_pct: Optional[float] = None       # win rate on active trades in this regime
+
+
 class WalkForwardResponse(BaseModel):
     window_days: int                            # the evaluation horizon (default 30d)
     lookback_days: int                          # how far back we scanned
     series: List[WalkForwardPoint]
     by_decision: List[DecisionClassSummary]
+    by_regime: List[RegimeStratifiedSummary] = []   # populated only when stratify_by_regime=true
     overall: WalkForwardOverall
 
 
@@ -696,6 +711,14 @@ def walk_forward(
     lookback_days: int = Query(
         365, ge=30, le=3650,
         description="How far back to include trades (default: 1 year).",
+    ),
+    stratify_by_regime: bool = Query(
+        False,
+        description="If true, additionally compute per-regime equity curves "
+                    "(CALM_BULL / VOLATILE_BULL / VOLATILE_BEAR / CALM_BEAR) "
+                    "so you can see which regimes the framework actually adds "
+                    "value in. Joins each trade_date to the regime active "
+                    "that day via service.regime.",
     ),
     limit: int = Query(2000, ge=10, le=10000),
 ) -> WalkForwardResponse:
@@ -824,11 +847,71 @@ def walk_forward(
         last_trade_date=series[-1].trade_date if series else None,
     )
 
+    by_regime: List[RegimeStratifiedSummary] = []
+    if stratify_by_regime and series:
+        # Join each series point's trade_date to the regime active on
+        # that day. Reuse the regime module's cached snapshot.
+        from service import regime as regime_module
+        trade_dates = sorted({s.trade_date for s in series})
+        regime_map = regime_module.regime_for_run_dates(trade_dates)
+
+        # Accumulate per-regime totals from the same series points.
+        reg_acc: Dict[str, Dict[str, float]] = {}
+        for s in series:
+            reg = regime_map.get(s.trade_date)
+            if reg is None:
+                continue
+            b = reg_acc.setdefault(reg, {
+                "n_trades": 0.0, "n_active": 0.0,
+                "strategy": 0.0, "spy": 0.0, "alpha_sum": 0.0,
+                "wins": 0.0, "counted": 0.0,
+            })
+            b["n_trades"] += 1
+            if s.position_weight != 0.0:
+                b["n_active"] += 1
+                if s.trade_contribution_pct is not None:
+                    b["strategy"] += s.trade_contribution_pct
+                if s.spy_return_pct is not None:
+                    b["spy"] += s.spy_return_pct
+                if s.ticker_return_pct is not None and s.spy_return_pct is not None:
+                    b["alpha_sum"] += (s.ticker_return_pct - s.spy_return_pct)
+            # Hit-rate tracking: directional bet succeeded if return moved
+            # in the direction implied by the position weight.
+            if s.ticker_return_pct is not None and s.position_weight != 0.0:
+                b["counted"] += 1
+                if s.position_weight > 0 and s.ticker_return_pct > 0:
+                    b["wins"] += 1
+                elif s.position_weight < 0 and s.ticker_return_pct < 0:
+                    b["wins"] += 1
+
+        for reg in regime_module.REGIMES:
+            b = reg_acc.get(reg)
+            if b is None:
+                by_regime.append(RegimeStratifiedSummary(
+                    regime=reg, n_trades=0, n_trades_active=0,
+                    cumulative_strategy_pct=0.0, cumulative_spy_pct=0.0,
+                    cumulative_alpha_pct=0.0,
+                ))
+                continue
+            mean_alpha = (b["alpha_sum"] / b["n_active"]) if b["n_active"] > 0 else None
+            hit_rate = (b["wins"] / b["counted"] * 100.0) if b["counted"] > 0 else None
+            by_regime.append(RegimeStratifiedSummary(
+                regime=reg,
+                n_trades=int(b["n_trades"]),
+                n_trades_active=int(b["n_active"]),
+                cumulative_strategy_pct=round(b["strategy"], 2),
+                cumulative_spy_pct=round(b["spy"], 2),
+                cumulative_alpha_pct=round(b["strategy"] - b["spy"], 2),
+                mean_alpha_pct=round(mean_alpha, 2) if mean_alpha is not None else None,
+                hit_rate_pct=round(hit_rate, 1) if hit_rate is not None else None,
+            ))
+
     return WalkForwardResponse(
         window_days=window_days,
         lookback_days=lookback_days,
         series=series,
         by_decision=by_decision,
+        by_regime=by_regime,
         overall=overall,
     )
 

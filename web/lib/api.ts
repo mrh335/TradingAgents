@@ -794,11 +794,23 @@ export type WalkForwardOverall = {
   last_trade_date: string | null;
 };
 
+export type RegimeStratifiedSummary = {
+  regime: string;
+  n_trades: number;
+  n_trades_active: number;
+  cumulative_strategy_pct: number;
+  cumulative_spy_pct: number;
+  cumulative_alpha_pct: number;
+  mean_alpha_pct: number | null;
+  hit_rate_pct: number | null;
+};
+
 export type WalkForwardResponse = {
   window_days: number;
   lookback_days: number;
   series: WalkForwardPoint[];
   by_decision: DecisionClassSummary[];
+  by_regime: RegimeStratifiedSummary[];
   overall: WalkForwardOverall;
 };
 
@@ -816,9 +828,13 @@ export const Backtest = {
     request<AttributionResponse>(`/backtest/attribution?window_days=${windowDays}`),
   actualVsNotional: () =>
     request<ActualVsNotionalResponse>("/backtest/actual-vs-notional"),
-  walkForward: (windowDays: number = 30, lookbackDays: number = 365) =>
+  walkForward: (
+    windowDays: number = 30,
+    lookbackDays: number = 365,
+    stratifyByRegime: boolean = false,
+  ) =>
     request<WalkForwardResponse>(
-      `/backtest/walk-forward?window_days=${windowDays}&lookback_days=${lookbackDays}`,
+      `/backtest/walk-forward?window_days=${windowDays}&lookback_days=${lookbackDays}${stratifyByRegime ? "&stratify_by_regime=true" : ""}`,
     ),
   recomputeAll: () =>
     request<{ computed: number; errors: number; error_details: string[] }>(
@@ -1460,6 +1476,81 @@ export type SectorRotationResponse = {
 export const Macro = {
   dashboard: () => request<MacroDashboardResponse>("/macro/dashboard"),
   sectorRotation: () => request<SectorRotationResponse>("/macro/sector-rotation"),
+};
+
+// ---- Regime classifier (3 tiers: rules, Markov, HMM) --------------------
+
+export type RegimeName =
+  | "CALM_BULL"
+  | "VOLATILE_BULL"
+  | "VOLATILE_BEAR"
+  | "CALM_BEAR";
+
+export type RegimeSnapshot = {
+  available: boolean;
+  as_of: string | null;
+  current_regime: RegimeName | null;
+  current_label: string | null;
+  current_blurb: string | null;
+  current_spy: number | null;
+  current_vix: number | null;
+  current_sma_200: number | null;
+  regime_order: string[];
+  transition_matrix: number[][];
+  stationary: Record<string, number>;
+  forecast_30d: Record<string, number>;
+  n_days_observed: number | null;
+  error: string | null;
+};
+
+export type HmmSnapshot = {
+  available: boolean;
+  n_states: number | null;
+  as_of: string | null;
+  current_regime: RegimeName | null;
+  regime_order: string[];
+  hmm_transition_matrix: number[][];
+  tier1_agreement_pct: number | null;
+  n_days_observed: number | null;
+  error: string | null;
+};
+
+export type RegimePerformanceRow = {
+  regime: RegimeName | string;
+  n_runs: number;
+  n_with_decision: number;
+  decisions: Record<string, number>;
+  mean_alpha_pct: number | null;
+  hit_rate_pct: number | null;
+};
+
+export type RegimePerformanceResponse = {
+  window_days: number;
+  lookback_days: number;
+  rows: RegimePerformanceRow[];
+  baseline_hit_rate_pct: number | null;
+  baseline_mean_alpha_pct: number | null;
+};
+
+export type RunRegime = {
+  run_id: string;
+  trade_date: string;
+  regime: RegimeName | null;
+  regime_label: string | null;
+  regime_blurb: string | null;
+  regime_hit_rate_pct: number | null;
+  baseline_hit_rate_pct: number | null;
+  regime_calls_count: number | null;
+};
+
+export const Regime = {
+  snapshot: () => request<RegimeSnapshot>("/regime/snapshot"),
+  hmm: (n_states = 4) => request<HmmSnapshot>(`/regime/hmm?n_states=${n_states}`),
+  byRunPerformance: (windowDays = 30, lookbackDays = 365) =>
+    request<RegimePerformanceResponse>(
+      `/regime/runs-by-regime?window_days=${windowDays}&lookback_days=${lookbackDays}`,
+    ),
+  forRun: (runId: string) => request<RunRegime>(`/regime/run/${runId}`),
 };
 
 // ---- 13F institutional holdings (smart-money view) -----------------------

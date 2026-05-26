@@ -10,6 +10,7 @@ import {
   type ActualVsNotionalRow,
   type WalkForwardPoint,
   type DecisionClassSummary,
+  type RegimeStratifiedSummary,
 } from "@/lib/api";
 import { decisionColor } from "@/lib/format";
 import {
@@ -399,9 +400,10 @@ const DECISION_TONE_TEXT: Record<string, string> = {
 
 function WalkForwardSection({ windowDays }: { windowDays: number }) {
   const [lookbackDays, setLookbackDays] = useState(365);
+  const [stratify, setStratify] = useState(false);
   const q = useQuery({
-    queryKey: ["backtest-walk-forward", windowDays, lookbackDays],
-    queryFn: () => Backtest.walkForward(windowDays, lookbackDays),
+    queryKey: ["backtest-walk-forward", windowDays, lookbackDays, stratify],
+    queryFn: () => Backtest.walkForward(windowDays, lookbackDays, stratify),
     refetchOnWindowFocus: false,
   });
 
@@ -459,6 +461,14 @@ function WalkForwardSection({ windowDays }: { windowDays: number }) {
             {l.label}
           </button>
         ))}
+        <label className="ml-auto flex items-center gap-1.5 text-xs cursor-pointer">
+          <input
+            type="checkbox"
+            checked={stratify}
+            onChange={(e) => setStratify(e.target.checked)}
+          />
+          <span>Stratify by regime</span>
+        </label>
       </div>
 
       <p className="text-muted text-xs mb-3">
@@ -586,17 +596,88 @@ function WalkForwardSection({ windowDays }: { windowDays: number }) {
         </div>
       )}
 
+      {/* Per-regime stratification (when toggle is on) */}
+      {stratify && d.by_regime && d.by_regime.length > 0 && (
+        <div className="card overflow-x-auto mt-3">
+          <div className="font-semibold text-sm mb-1">
+            Stratified by market regime
+          </div>
+          <p className="text-xs text-muted mb-3">
+            Each trade joined to the regime active on its trade_date. Tells
+            you in which market environments the framework actually adds
+            value — useful for sizing decisions when /macro shows a regime
+            change is in progress.
+          </p>
+          <table className="w-full text-sm">
+            <thead className="text-left text-xs uppercase text-muted">
+              <tr>
+                <th className="py-2">Regime</th>
+                <th className="text-right">Trades</th>
+                <th className="text-right">Active (non-Hold)</th>
+                <th className="text-right">Strategy</th>
+                <th className="text-right">SPY</th>
+                <th className="text-right">Alpha</th>
+                <th className="text-right">Hit rate</th>
+              </tr>
+            </thead>
+            <tbody>
+              {d.by_regime.map((r: RegimeStratifiedSummary) => (
+                <tr key={r.regime} className="border-t border-border">
+                  <td className={`py-1.5 font-semibold ${REGIME_TONE_TEXT[r.regime] ?? "text-muted"}`}>
+                    {REGIME_LABEL[r.regime] ?? r.regime}
+                  </td>
+                  <td className="text-right tabular-nums">{r.n_trades}</td>
+                  <td className="text-right tabular-nums">{r.n_trades_active}</td>
+                  <td className={`text-right tabular-nums ${r.cumulative_strategy_pct >= 0 ? "text-success" : "text-danger"}`}>
+                    {fmtPct(r.cumulative_strategy_pct)}
+                  </td>
+                  <td className="text-right tabular-nums text-muted">
+                    {fmtPct(r.cumulative_spy_pct)}
+                  </td>
+                  <td className={`text-right tabular-nums font-semibold ${r.cumulative_alpha_pct > 0 ? "text-success" : r.cumulative_alpha_pct < 0 ? "text-danger" : "text-muted"}`}>
+                    {fmtPct(r.cumulative_alpha_pct)}
+                  </td>
+                  <td className={`text-right tabular-nums ${(r.hit_rate_pct ?? 0) >= 55 ? "text-success" : (r.hit_rate_pct ?? 0) < 45 ? "text-danger" : "text-muted"}`}>
+                    {r.hit_rate_pct !== null ? `${r.hit_rate_pct}%` : "—"}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
       <p className="text-xs text-muted mt-2">
         <strong>How to use this:</strong> if a decision class has a
         consistently negative cumulative contribution (e.g. Hold calls cost
         you 5% over the year), you can drop that class from your real
         trading — just ignore those signals. If Buy calls show big positive
         alpha but Sell calls show negative, the framework is good at finding
-        long ideas but bad at calling tops; act accordingly.
+        long ideas but bad at calling tops; act accordingly. With the regime
+        stratification toggle on, you also see which market environments add
+        value — combine with the current regime tag on{" "}
+        <Link href="/macro" className="text-accent hover:underline">
+          /macro
+        </Link>{" "}
+        to up-weight or down-weight today&apos;s signals.
       </p>
     </section>
   );
 }
+
+const REGIME_LABEL: Record<string, string> = {
+  CALM_BULL: "Calm bull",
+  VOLATILE_BULL: "Volatile bull",
+  VOLATILE_BEAR: "Volatile bear",
+  CALM_BEAR: "Calm bear",
+};
+
+const REGIME_TONE_TEXT: Record<string, string> = {
+  CALM_BULL: "text-success",
+  VOLATILE_BULL: "text-warning",
+  VOLATILE_BEAR: "text-danger",
+  CALM_BEAR: "text-muted",
+};
 
 // ──────────────────────────────────────────────────────────────────────
 // Actual vs notional — what you actually realized from your own trades
