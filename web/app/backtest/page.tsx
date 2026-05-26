@@ -8,8 +8,20 @@ import {
   type HitRateCell,
   type TickerAttributionRow,
   type ActualVsNotionalRow,
+  type WalkForwardPoint,
+  type DecisionClassSummary,
 } from "@/lib/api";
 import { decisionColor } from "@/lib/format";
+import {
+  CartesianGrid,
+  Legend,
+  Line,
+  LineChart,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from "recharts";
 
 const WINDOWS = [
   { label: "+5d", days: 5 },
@@ -153,6 +165,9 @@ export default function BacktestPage() {
       )}
 
       {/* Per-ticker attribution */}
+      {/* Walk-forward equity curve — *the* answer to "does this thing actually work" */}
+      <WalkForwardSection windowDays={windowDays} />
+
       <AttributionSection windowDays={windowDays} />
 
       {/* Actual vs notional — uses trade_journal entries linked via linked_run_id */}
@@ -360,6 +375,228 @@ function HitRateTable({ rows, windowDays }: { rows: HitRateCell[]; windowDays: n
   );
 }
 
+
+// ──────────────────────────────────────────────────────────────────────
+// Walk-forward backtest — accumulated strategy P&L if you'd traded
+// every framework signal in chronological order. The most-honest single
+// view of "does this framework actually add value over time?"
+// ──────────────────────────────────────────────────────────────────────
+
+const LOOKBACKS = [
+  { label: "90d", days: 90 },
+  { label: "180d", days: 180 },
+  { label: "1y", days: 365 },
+  { label: "2y", days: 730 },
+];
+
+const DECISION_TONE_TEXT: Record<string, string> = {
+  Buy: "text-success",
+  Overweight: "text-success",
+  Hold: "text-muted",
+  Underweight: "text-warning",
+  Sell: "text-danger",
+};
+
+function WalkForwardSection({ windowDays }: { windowDays: number }) {
+  const [lookbackDays, setLookbackDays] = useState(365);
+  const q = useQuery({
+    queryKey: ["backtest-walk-forward", windowDays, lookbackDays],
+    queryFn: () => Backtest.walkForward(windowDays, lookbackDays),
+    refetchOnWindowFocus: false,
+  });
+
+  if (q.isLoading) {
+    return (
+      <section>
+        <h2 className="text-lg font-semibold mb-3">Walk-forward equity curve</h2>
+        <div className="card text-sm text-muted">
+          Computing… (walks every completed run chronologically, ~3s per 100 runs on cold cache)
+        </div>
+      </section>
+    );
+  }
+  if (!q.data || q.data.series.length === 0) {
+    return (
+      <section>
+        <h2 className="text-lg font-semibold mb-3">Walk-forward equity curve</h2>
+        <div className="card text-sm text-muted">
+          No completed runs in the last {lookbackDays} days with a reached +{windowDays}d
+          horizon. Try a longer lookback or shorter window.
+        </div>
+      </section>
+    );
+  }
+
+  const d = q.data;
+  const o = d.overall;
+  const chartData = d.series.map((s) => ({
+    x: s.eval_date ?? s.trade_date,
+    strategy: s.cumulative_strategy_pct,
+    spy: s.cumulative_spy_pct,
+    alpha: s.cumulative_alpha_pct,
+  }));
+
+  const strategyTone =
+    o.cumulative_strategy_pct >= 0 ? "text-success" : "text-danger";
+  const alphaTone =
+    o.cumulative_alpha_pct > 0
+      ? "text-success"
+      : o.cumulative_alpha_pct < 0
+        ? "text-danger"
+        : "text-muted";
+
+  return (
+    <section>
+      <div className="flex items-baseline gap-3 mb-3 flex-wrap">
+        <h2 className="text-lg font-semibold">Walk-forward equity curve</h2>
+        <span className="text-xs text-muted">Lookback:</span>
+        {LOOKBACKS.map((l) => (
+          <button
+            key={l.days}
+            onClick={() => setLookbackDays(l.days)}
+            className={`btn text-xs ${lookbackDays === l.days ? "btn-primary" : ""}`}
+          >
+            {l.label}
+          </button>
+        ))}
+      </div>
+
+      <p className="text-muted text-xs mb-3">
+        For every completed run with a reached +{windowDays}d horizon, the
+        framework&apos;s decision is treated as a position signal: Buy = full
+        long, Overweight = half long, Hold = skip, Underweight = half short,
+        Sell = full short. Per-trade return × position-weight accumulates into
+        the strategy curve. SPY is what you&apos;d have made putting equivalent
+        capital into the index on each active signal day. Alpha is the value-add.
+      </p>
+
+      {/* Scoreboard */}
+      <div className="card grid grid-cols-2 md:grid-cols-4 gap-4 mb-3">
+        <div>
+          <div className="text-xs text-muted">Trades counted</div>
+          <div className="text-2xl font-bold">{o.n_trades_total}</div>
+          <div className="text-xs text-muted mt-0.5">
+            {o.n_trades_active} active (non-Hold)
+          </div>
+        </div>
+        <div>
+          <div className="text-xs text-muted">Cumulative strategy</div>
+          <div className={`text-2xl font-bold ${strategyTone}`}>
+            {fmtPct(o.cumulative_strategy_pct)}
+          </div>
+        </div>
+        <div>
+          <div className="text-xs text-muted">SPY same-days</div>
+          <div className="text-2xl font-bold text-muted">
+            {fmtPct(o.cumulative_spy_pct)}
+          </div>
+        </div>
+        <div>
+          <div className="text-xs text-muted">Cumulative alpha</div>
+          <div className={`text-2xl font-bold ${alphaTone}`}>
+            {fmtPct(o.cumulative_alpha_pct)}
+          </div>
+          <div className="text-xs text-muted mt-0.5">strategy − SPY</div>
+        </div>
+      </div>
+
+      {/* Equity curve chart */}
+      <div className="card" style={{ height: 320 }}>
+        <ResponsiveContainer width="100%" height="100%">
+          <LineChart data={chartData} margin={{ top: 10, right: 20, left: 0, bottom: 5 }}>
+            <CartesianGrid strokeDasharray="3 3" opacity={0.15} />
+            <XAxis dataKey="x" tick={{ fontSize: 11 }} minTickGap={30} />
+            <YAxis
+              tick={{ fontSize: 11 }}
+              tickFormatter={(v) => `${v.toFixed(0)}%`}
+              width={50}
+            />
+            <Tooltip
+              formatter={(value: number) => `${value.toFixed(2)}%`}
+              labelFormatter={(label) => `Eval date: ${label}`}
+              contentStyle={{ fontSize: 12 }}
+            />
+            <Legend wrapperStyle={{ fontSize: 12 }} />
+            <Line
+              type="monotone"
+              dataKey="strategy"
+              name="Framework strategy"
+              stroke="rgb(34, 197, 94)"
+              strokeWidth={2}
+              dot={false}
+            />
+            <Line
+              type="monotone"
+              dataKey="spy"
+              name="SPY same-days"
+              stroke="rgb(148, 163, 184)"
+              strokeWidth={2}
+              dot={false}
+              strokeDasharray="4 4"
+            />
+            <Line
+              type="monotone"
+              dataKey="alpha"
+              name="Alpha (strategy − SPY)"
+              stroke="rgb(99, 102, 241)"
+              strokeWidth={1.5}
+              dot={false}
+            />
+          </LineChart>
+        </ResponsiveContainer>
+      </div>
+
+      {/* Per-decision-class table */}
+      {d.by_decision.length > 0 && (
+        <div className="card overflow-x-auto mt-3">
+          <table className="w-full text-sm">
+            <thead className="text-left text-xs uppercase text-muted">
+              <tr>
+                <th className="py-2">Decision</th>
+                <th className="text-right">Calls</th>
+                <th className="text-right">Hit rate</th>
+                <th className="text-right">Mean return</th>
+                <th className="text-right">Mean alpha</th>
+                <th className="text-right">Cumulative contribution</th>
+              </tr>
+            </thead>
+            <tbody>
+              {d.by_decision.map((r) => (
+                <tr key={r.decision} className="border-t border-border">
+                  <td className={`py-2 font-semibold ${DECISION_TONE_TEXT[r.decision] ?? ""}`}>
+                    {r.decision}
+                  </td>
+                  <td className="text-right tabular-nums">{r.n_trades}</td>
+                  <td className={`text-right tabular-nums ${(r.hit_rate_pct ?? 0) >= 55 ? "text-success" : (r.hit_rate_pct ?? 0) < 45 ? "text-danger" : "text-muted"}`}>
+                    {r.hit_rate_pct !== null ? `${r.hit_rate_pct}%` : "—"}
+                  </td>
+                  <td className={`text-right tabular-nums ${(r.mean_return_pct ?? 0) >= 0 ? "text-success" : "text-danger"}`}>
+                    {fmtPct(r.mean_return_pct)}
+                  </td>
+                  <td className={`text-right tabular-nums ${(r.mean_alpha_pct ?? 0) >= 0 ? "text-success" : "text-danger"}`}>
+                    {fmtPct(r.mean_alpha_pct)}
+                  </td>
+                  <td className={`text-right tabular-nums font-semibold ${r.cumulative_contribution_pct >= 0 ? "text-success" : "text-danger"}`}>
+                    {fmtPct(r.cumulative_contribution_pct)}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      <p className="text-xs text-muted mt-2">
+        <strong>How to use this:</strong> if a decision class has a
+        consistently negative cumulative contribution (e.g. Hold calls cost
+        you 5% over the year), you can drop that class from your real
+        trading — just ignore those signals. If Buy calls show big positive
+        alpha but Sell calls show negative, the framework is good at finding
+        long ideas but bad at calling tops; act accordingly.
+      </p>
+    </section>
+  );
+}
 
 // ──────────────────────────────────────────────────────────────────────
 // Actual vs notional — what you actually realized from your own trades

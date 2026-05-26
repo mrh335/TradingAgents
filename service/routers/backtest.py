@@ -619,6 +619,220 @@ def actual_vs_notional(limit: int = Query(500, ge=10, le=2000)) -> ActualVsNotio
     return ActualVsNotionalResponse(window_days=30, runs=out_rows, aggregate=aggregate)
 
 
+# ---------------------------------------------------------------------------
+# Walk-forward backtest — accumulated strategy P&L over time.
+# Declared BEFORE /{run_id} so FastAPI doesn't capture "walk-forward" as
+# a run_id parameter.
+# ---------------------------------------------------------------------------
+
+# Position weights per decision class. Models a long-only / partial-short
+# user who follows signals at face value: Buy = full position, Overweight
+# = half-position add, Hold = no change, Underweight = half-position
+# trim, Sell = full exit. The weights determine each trade's contribution
+# to the cumulative strategy P&L curve.
+_DECISION_WEIGHTS: Dict[str, float] = {
+    "Buy": 1.0,
+    "Overweight": 0.5,
+    "Hold": 0.0,
+    "Underweight": -0.5,
+    "Sell": -1.0,
+}
+
+
+class WalkForwardPoint(BaseModel):
+    """One trade evaluation, in chronological order. Each call's per-trade
+    return is added to the running cumulative curves so the frontend can
+    render a strategy-vs-benchmark equity line."""
+    trade_date: str            # the original recommendation date
+    eval_date: Optional[str] = None  # trade_date + window_days (when realized)
+    run_id: str
+    ticker: str
+    decision: Optional[str] = None
+    position_weight: float       # +1, +0.5, 0, -0.5, -1 per _DECISION_WEIGHTS
+    ticker_return_pct: Optional[float] = None
+    spy_return_pct: Optional[float] = None
+    trade_contribution_pct: Optional[float] = None  # ticker_return * weight
+    cumulative_strategy_pct: float                  # running sum of contributions
+    cumulative_spy_pct: float                       # running sum of SPY returns for active trades
+    cumulative_alpha_pct: float                     # strategy − SPY (the value-add line)
+
+
+class DecisionClassSummary(BaseModel):
+    """Per-decision-class rollup. Answers questions like 'are my Hold calls
+    actually adding value, or should I just ignore them?'."""
+    decision: str
+    n_trades: int               # number of completed calls of this class
+    n_wins: int                 # n where the call's directional bet paid off
+    hit_rate_pct: Optional[float] = None
+    mean_return_pct: Optional[float] = None       # average ticker_return over those trades
+    cumulative_contribution_pct: float            # this class's total contribution to strategy P&L
+    mean_alpha_pct: Optional[float] = None        # average (ticker - SPY) over those trades
+
+
+class WalkForwardOverall(BaseModel):
+    n_trades_total: int
+    n_trades_active: int        # excludes Hold (weight=0)
+    cumulative_strategy_pct: float
+    cumulative_spy_pct: float
+    cumulative_alpha_pct: float
+    first_trade_date: Optional[str] = None
+    last_trade_date: Optional[str] = None
+
+
+class WalkForwardResponse(BaseModel):
+    window_days: int                            # the evaluation horizon (default 30d)
+    lookback_days: int                          # how far back we scanned
+    series: List[WalkForwardPoint]
+    by_decision: List[DecisionClassSummary]
+    overall: WalkForwardOverall
+
+
+@router.get("/walk-forward", response_model=WalkForwardResponse)
+def walk_forward(
+    window_days: int = Query(
+        30, ge=5, le=365,
+        description="Evaluation horizon: each trade is scored at trade_date + window_days.",
+    ),
+    lookback_days: int = Query(
+        365, ge=30, le=3650,
+        description="How far back to include trades (default: 1 year).",
+    ),
+    limit: int = Query(2000, ge=10, le=10000),
+) -> WalkForwardResponse:
+    """Cumulative strategy P&L if you'd traded every framework signal.
+
+    For each completed run in chronological order:
+      - Look up the +window_days realized return for the ticker AND SPY
+      - Convert the framework's decision into a position weight (Buy=+1,
+        Overweight=+0.5, Hold=0, Underweight=-0.5, Sell=-1)
+      - Per-trade contribution = ticker_return × position_weight
+      - Add to running cumulative strategy curve
+
+    SPY baseline: for each "active" trade (weight ≠ 0), add SPY's
+    return over the same window. This gives a same-active-days
+    comparison — fairer than buy-and-hold over the entire span when
+    the user only takes some signals.
+
+    The cumulative_alpha line is the value-add: how much better (or
+    worse) the framework did than dumping the same capital into SPY
+    on each signal day.
+    """
+    cutoff = (date.today() - timedelta(days=lookback_days)).isoformat()
+    rows = [
+        r for r in storage.list_runs(limit=limit)
+        if (r.get("status") or "").lower() == "done"
+        and (r.get("trade_date") or "") >= cutoff
+    ]
+    # Chronological — oldest first so the cumulative curve builds left-to-right.
+    rows.sort(key=lambda r: r.get("trade_date") or "")
+
+    # Materialize results (cached sidecars where present).
+    series: List[WalkForwardPoint] = []
+    cumulative_strategy = 0.0
+    cumulative_spy = 0.0
+    by_decision_acc: Dict[str, Dict[str, Any]] = {}
+
+    for r in rows:
+        try:
+            res = _compute(r, force=False)
+        except Exception as e:
+            logger.warning(f"walk_forward skipped {r.get('run_id')}: {e}")
+            continue
+        win = next((w for w in res.windows if w.days == window_days), None)
+        if win is None or not win.horizon_reached:
+            # Don't include calls whose evaluation horizon hasn't elapsed —
+            # they'd skew the curve with unrealized noise.
+            continue
+
+        decision = res.decision
+        weight = _DECISION_WEIGHTS.get(decision or "", 0.0)
+        ticker_ret = win.ticker_return_pct
+        spy_ret = win.benchmark_return_pct
+
+        contribution = None
+        if ticker_ret is not None:
+            contribution = round(ticker_ret * weight, 4)
+            cumulative_strategy = round(cumulative_strategy + contribution, 4)
+            # SPY contributes only on active trades (when we actually took
+            # a position); a Hold doesn't claim SPY capital.
+            if weight != 0.0 and spy_ret is not None:
+                cumulative_spy = round(cumulative_spy + spy_ret, 4)
+
+        series.append(WalkForwardPoint(
+            trade_date=res.trade_date,
+            eval_date=win.end_date,
+            run_id=res.run_id,
+            ticker=res.ticker,
+            decision=decision,
+            position_weight=weight,
+            ticker_return_pct=ticker_ret,
+            spy_return_pct=spy_ret,
+            trade_contribution_pct=contribution,
+            cumulative_strategy_pct=cumulative_strategy,
+            cumulative_spy_pct=cumulative_spy,
+            cumulative_alpha_pct=round(cumulative_strategy - cumulative_spy, 4),
+        ))
+
+        # Update per-decision-class rollup.
+        if decision:
+            d = by_decision_acc.setdefault(
+                decision,
+                {"n": 0, "wins": 0, "ret_sum": 0.0, "alpha_sum": 0.0, "active_n": 0,
+                 "contribution_sum": 0.0},
+            )
+            d["n"] += 1
+            if win.win is True:
+                d["wins"] += 1
+            if ticker_ret is not None:
+                d["ret_sum"] += ticker_ret
+                d["active_n"] += 1
+                if contribution is not None:
+                    d["contribution_sum"] += contribution
+                if spy_ret is not None:
+                    d["alpha_sum"] += (ticker_ret - spy_ret)
+
+    by_decision: List[DecisionClassSummary] = []
+    # Sort by canonical decision order so output is consistent.
+    _DECISION_ORDER = ("Buy", "Overweight", "Hold", "Underweight", "Sell")
+    keys = sorted(
+        by_decision_acc.keys(),
+        key=lambda k: _DECISION_ORDER.index(k) if k in _DECISION_ORDER else 99,
+    )
+    for k in keys:
+        d = by_decision_acc[k]
+        hit_rate = (d["wins"] / d["n"] * 100.0) if d["n"] > 0 else None
+        mean_ret = (d["ret_sum"] / d["active_n"]) if d["active_n"] > 0 else None
+        mean_alpha = (d["alpha_sum"] / d["active_n"]) if d["active_n"] > 0 else None
+        by_decision.append(DecisionClassSummary(
+            decision=k,
+            n_trades=d["n"],
+            n_wins=d["wins"],
+            hit_rate_pct=round(hit_rate, 1) if hit_rate is not None else None,
+            mean_return_pct=round(mean_ret, 2) if mean_ret is not None else None,
+            cumulative_contribution_pct=round(d["contribution_sum"], 2),
+            mean_alpha_pct=round(mean_alpha, 2) if mean_alpha is not None else None,
+        ))
+
+    n_active = sum(1 for s in series if s.position_weight != 0.0)
+    overall = WalkForwardOverall(
+        n_trades_total=len(series),
+        n_trades_active=n_active,
+        cumulative_strategy_pct=round(cumulative_strategy, 2),
+        cumulative_spy_pct=round(cumulative_spy, 2),
+        cumulative_alpha_pct=round(cumulative_strategy - cumulative_spy, 2),
+        first_trade_date=series[0].trade_date if series else None,
+        last_trade_date=series[-1].trade_date if series else None,
+    )
+
+    return WalkForwardResponse(
+        window_days=window_days,
+        lookback_days=lookback_days,
+        series=series,
+        by_decision=by_decision,
+        overall=overall,
+    )
+
+
 @router.get("/{run_id}", response_model=BacktestResult)
 def get_backtest(
     run_id: str,

@@ -759,6 +759,49 @@ export type AttributionResponse = {
   rows: TickerAttributionRow[];
 };
 
+export type WalkForwardPoint = {
+  trade_date: string;
+  eval_date: string | null;
+  run_id: string;
+  ticker: string;
+  decision: string | null;
+  position_weight: number;
+  ticker_return_pct: number | null;
+  spy_return_pct: number | null;
+  trade_contribution_pct: number | null;
+  cumulative_strategy_pct: number;
+  cumulative_spy_pct: number;
+  cumulative_alpha_pct: number;
+};
+
+export type DecisionClassSummary = {
+  decision: string;
+  n_trades: number;
+  n_wins: number;
+  hit_rate_pct: number | null;
+  mean_return_pct: number | null;
+  cumulative_contribution_pct: number;
+  mean_alpha_pct: number | null;
+};
+
+export type WalkForwardOverall = {
+  n_trades_total: number;
+  n_trades_active: number;
+  cumulative_strategy_pct: number;
+  cumulative_spy_pct: number;
+  cumulative_alpha_pct: number;
+  first_trade_date: string | null;
+  last_trade_date: string | null;
+};
+
+export type WalkForwardResponse = {
+  window_days: number;
+  lookback_days: number;
+  series: WalkForwardPoint[];
+  by_decision: DecisionClassSummary[];
+  overall: WalkForwardOverall;
+};
+
 export const Backtest = {
   summary: (windowDays: number = 30) =>
     request<BacktestSummaryResponse>(`/backtest/?window_days=${windowDays}`),
@@ -773,6 +816,10 @@ export const Backtest = {
     request<AttributionResponse>(`/backtest/attribution?window_days=${windowDays}`),
   actualVsNotional: () =>
     request<ActualVsNotionalResponse>("/backtest/actual-vs-notional"),
+  walkForward: (windowDays: number = 30, lookbackDays: number = 365) =>
+    request<WalkForwardResponse>(
+      `/backtest/walk-forward?window_days=${windowDays}&lookback_days=${lookbackDays}`,
+    ),
   recomputeAll: () =>
     request<{ computed: number; errors: number; error_details: string[] }>(
       "/backtest/recompute-all",
