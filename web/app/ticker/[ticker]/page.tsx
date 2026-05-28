@@ -12,8 +12,8 @@ import {
   Restrictions,
   Runs,
   Tickers,
-  type RunSummary,
 } from "@/lib/api";
+import type { RunSummary } from "@/lib/types";
 import { decisionColor } from "@/lib/format";
 
 // ──────────────────────────────────────────────────────────────────────
