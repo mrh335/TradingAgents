@@ -1577,6 +1577,29 @@ export const Regime = {
   forTicker: (ticker: string) => request<TickerRegime>(`/regime/ticker/${ticker}`),
 };
 
+// ---- Per-ticker technical snapshot (for the ticker detail page) -----
+
+export type TickerSnapshot = {
+  ticker: string;
+  available: boolean;
+  current_price: number | null;
+  change_pct_today: number | null;
+  high_52w: number | null;
+  low_52w: number | null;
+  range_position_pct: number | null;
+  sma_50: number | null;
+  sma_200: number | null;
+  pct_vs_sma_50: number | null;
+  pct_vs_sma_200: number | null;
+  golden_cross: boolean | null;
+  error: string | null;
+};
+
+export const Tickers = {
+  snapshot: (ticker: string) =>
+    request<TickerSnapshot>(`/tickers/${ticker}/snapshot`),
+};
+
 // ---- 13F institutional holdings (smart-money view) -----------------------
 
 export type Manager13F = {

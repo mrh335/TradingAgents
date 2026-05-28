@@ -86,7 +86,15 @@ export default function PortfolioPage() {
               const sign = (p.unrealized ?? 0) >= 0;
               return (
                 <tr key={p.id} className="border-t border-border">
-                  <td className="py-2 px-3 font-semibold">{p.ticker}</td>
+                  <td className="py-2 px-3 font-semibold">
+                    <a
+                      href={`/ticker/${p.ticker}`}
+                      className="hover:text-accent"
+                      title="Open ticker detail (latest analysis, decision, target, brief)"
+                    >
+                      {p.ticker}
+                    </a>
+                  </td>
                   <td className="py-2 px-3 text-right tabular-nums">{p.shares}</td>
                   <td className="py-2 px-3 text-right tabular-nums">${p.cost_basis_per_share.toFixed(2)}</td>
                   <td className="py-2 px-3 text-right tabular-nums">${p.cost.toFixed(2)}</td>

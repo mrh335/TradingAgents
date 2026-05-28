@@ -54,6 +54,7 @@ from service.routers import (
     sidecars as sidecars_router,
     simulation,
     streaming,
+    tickers as tickers_router,
     tokens as tokens_router,
     trades as trades_router,
     watchlist,
@@ -189,6 +190,7 @@ app.include_router(holders_router.router)
 app.include_router(portfolio_metrics_router.router)
 app.include_router(macro_router.router)
 app.include_router(regime_router.router)
+app.include_router(tickers_router.router)
 app.include_router(earnings_router.router)
 app.include_router(ask_router.router)
 app.include_router(compare_router.router)

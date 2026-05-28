@@ -141,8 +141,19 @@ export default function WatchlistPage() {
               return (
                 <tr key={e.id} className="border-t border-border">
                   <td className="py-2 px-3">
-                    <Link href={`/run?ticker=${e.ticker}`} className="font-semibold hover:text-accent">
+                    <Link
+                      href={`/ticker/${e.ticker}`}
+                      className="font-semibold hover:text-accent"
+                      title="Open ticker detail (latest analysis, decision, target, brief)"
+                    >
                       {e.ticker}
+                    </Link>{" "}
+                    <Link
+                      href={`/run?ticker=${e.ticker}`}
+                      className="text-xs text-muted hover:text-accent"
+                      title="Skip detail and go straight to running a new analysis"
+                    >
+                      ▶
                     </Link>
                   </td>
                   <td className="py-2 px-3 text-right tabular-nums">
