@@ -796,6 +796,10 @@ function RegimeBadge({ runId }: { runId: string }) {
     }
   }
 
+  // Detect divergence between market and ticker regime
+  const divergent =
+    d.ticker_regime && d.regime && d.ticker_regime !== d.regime;
+
   return (
     <div className={`card border-l-4 ${border} text-sm`}>
       <div className="flex items-baseline gap-3 flex-wrap">
@@ -816,6 +820,30 @@ function RegimeBadge({ runId }: { runId: string }) {
           </span>
         )}
       </div>
+
+      {/* Ticker-specific regime, with divergence callout */}
+      {d.ticker_regime && (
+        <div className="flex items-baseline gap-3 flex-wrap mt-1.5">
+          <span className="text-xs uppercase tracking-wider text-muted">
+            This ticker
+          </span>
+          <span className={`font-semibold ${REGIME_BORDER_TONE[d.ticker_regime]?.replace("border-l-", "text-") ?? "text-muted"}`}>
+            {d.ticker_regime_label ?? d.ticker_regime}
+          </span>
+          {d.ticker_vol_ratio !== null && (
+            <span className="text-xs text-muted">
+              30d vol is <strong>{d.ticker_vol_ratio.toFixed(2)}×</strong> its
+              own 1-year median
+            </span>
+          )}
+          {divergent && (
+            <span className="text-xs text-warning font-semibold">
+              ⚠ diverges from market regime — treat ticker-specific signals with extra weight
+            </span>
+          )}
+        </div>
+      )}
+
       {adjustment && <div className="mt-1.5 text-xs">{adjustment}</div>}
       {d.regime_blurb && (
         <div className="text-xs text-muted mt-1.5">{d.regime_blurb}</div>

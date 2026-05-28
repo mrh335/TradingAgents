@@ -6,6 +6,14 @@
 > consume paths (manual, Windows Scheduled Task, remote routine, server
 > drainer) and why each exists.
 
+> **Portfolio Q&A and what-if scenarios via MCP live in
+> `docs/mcp-portfolio-qa.md`.** Read that when the user asks about
+> using Claude Code conversationally against their portfolio (e.g.
+> "what's my concentration risk", "open a paper position",
+> "compare the last 3 NVDA runs"). The MCP server exposes ~15 tools
+> that the AI calls directly — much faster + cheaper than spinning
+> up a new analysis run for read-only questions.
+
 
 
 This file tells Claude Code how to participate as a **token-free analyst**

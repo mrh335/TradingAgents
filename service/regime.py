@@ -526,6 +526,137 @@ def _label_hmm_states(means_return, vars_return, n_states: int) -> Dict[int, str
     return labels
 
 
+# ───────────────────────────────────────────────────────────────────────
+# Per-ticker regime — extends the market-level (SPY+VIX) classifier to
+# individual stocks. Critical because:
+#   - NVDA's "normal" vol is ~50% while KO's is ~15%. A fixed VIX-style
+#     threshold doesn't work cross-ticker.
+#   - The market can be CALM_BULL while NVDA is VOLATILE_BULL (or vice
+#     versa). Showing both lets the user see when a name diverges from
+#     the broader regime.
+# ───────────────────────────────────────────────────────────────────────
+
+
+_TICKER_REGIME_CACHE: Dict[str, Any] = {}
+_TICKER_REGIME_LOCK = threading.Lock()
+_TICKER_REGIME_TTL_SEC = 3600  # 1 hour
+
+
+def classify_ticker_day(close: Optional[float],
+                         sma_200: Optional[float],
+                         realized_vol_30d: Optional[float],
+                         baseline_vol: Optional[float],
+                         vol_multiplier: float = 1.2) -> Optional[str]:
+    """Per-ticker rule-based regime — same 4 quadrants as the market
+    classifier but using the TICKER's own 30-day realized volatility
+    compared to its 365-day median.
+
+    ``vol_multiplier`` controls the calm/volatile threshold: 30d vol
+    above ``vol_multiplier × baseline`` is "volatile" for this ticker.
+    1.2 is the default — meaningfully above normal without being so
+    extreme that VOLATILE_BULL never fires.
+    """
+    if close is None or sma_200 is None or realized_vol_30d is None or baseline_vol is None:
+        return None
+    if baseline_vol <= 0:
+        return None
+    bull = close > sma_200
+    volatile = realized_vol_30d > vol_multiplier * baseline_vol
+    if bull and not volatile:
+        return "CALM_BULL"
+    if bull and volatile:
+        return "VOLATILE_BULL"
+    if (not bull) and volatile:
+        return "VOLATILE_BEAR"
+    return "CALM_BEAR"
+
+
+def get_ticker_regime(ticker: str) -> Dict[str, Any]:
+    """Current regime for a single ticker, plus its own transition matrix
+    + recent regime history. Cached per ticker for 1h.
+    """
+    t = (ticker or "").upper()
+    if not t:
+        return {"available": False, "error": "missing ticker"}
+    now = time.time()
+    with _TICKER_REGIME_LOCK:
+        cached = _TICKER_REGIME_CACHE.get(t)
+        if cached and (now - cached["_ts"] < _TICKER_REGIME_TTL_SEC):
+            return cached["data"]
+        data = _compute_ticker_regime(t)
+        _TICKER_REGIME_CACHE[t] = {"_ts": now, "data": data}
+        return data
+
+
+def _compute_ticker_regime(ticker: str) -> Dict[str, Any]:
+    """Pull 2 years of history, compute regimes for every day, return
+    current + transition matrix + stationary distribution."""
+    try:
+        import yfinance as yf
+        import numpy as np
+        import pandas as pd
+    except ImportError:
+        return {"available": False, "error": "numpy/pandas/yfinance missing"}
+
+    try:
+        hist = yf.Ticker(ticker).history(period="2y", auto_adjust=True)
+    except Exception as e:
+        return {"available": False, "error": f"yfinance fetch failed: {e}"}
+
+    if hist is None or hist.empty:
+        return {"available": False, "error": "no price history"}
+
+    if hist.index.tz is not None:
+        hist.index = hist.index.tz_localize(None)
+
+    close = hist["Close"]
+    sma_200 = close.rolling(SMA_WINDOW, min_periods=20).mean()
+    log_ret = np.log(close / close.shift(1))
+    # Annualized realized volatility, expressed as %
+    realized_vol = log_ret.rolling(30).std() * np.sqrt(252) * 100
+
+    # Baseline = median of last ~365 days of 30d-vol. Per-ticker scale.
+    baseline = realized_vol.tail(365).median()
+    if not np.isfinite(baseline) or baseline <= 0:
+        return {"available": False, "error": "could not compute baseline vol"}
+
+    # Classify every day in the window.
+    regimes: List[Optional[str]] = []
+    regimes_by_date: Dict[str, str] = {}
+    for ts, c in close.items():
+        d = ts.date().isoformat() if hasattr(ts, "date") else str(ts)[:10]
+        reg = classify_ticker_day(
+            c, sma_200.loc[ts] if ts in sma_200.index else None,
+            realized_vol.loc[ts] if ts in realized_vol.index else None,
+            baseline,
+        )
+        if reg is not None:
+            regimes_by_date[d] = reg
+        regimes.append(reg)
+
+    current = next((r for r in reversed(regimes) if r is not None), None)
+    matrix = transition_matrix(regimes)
+    stationary = stationary_distribution(matrix)
+    forecast_30d = forecast_distribution(current, matrix, 30) if current else {}
+
+    return {
+        "available": True,
+        "ticker": ticker,
+        "as_of": str(close.index[-1].date()) if hasattr(close.index[-1], "date") else None,
+        "current_regime": current,
+        "current_price": float(close.iloc[-1]),
+        "current_sma_200": float(sma_200.iloc[-1]) if np.isfinite(sma_200.iloc[-1]) else None,
+        "realized_vol_30d_pct": round(float(realized_vol.iloc[-1]), 1) if np.isfinite(realized_vol.iloc[-1]) else None,
+        "baseline_vol_pct": round(float(baseline), 1),
+        "vol_ratio": round(float(realized_vol.iloc[-1] / baseline), 2) if np.isfinite(realized_vol.iloc[-1]) else None,
+        "transition_matrix": matrix.tolist(),
+        "stationary": {REGIMES[i]: float(stationary[i]) for i in range(N_REGIMES)},
+        "forecast_30d": forecast_30d,
+        "regimes_by_date": regimes_by_date,
+        "n_days_observed": sum(1 for r in regimes if r is not None),
+    }
+
+
 def _reorder_to_regime_axes(matrix, state_to_label: Dict[int, str]) -> List[List[float]]:
     """Reshape the HMM's raw NxN transition matrix to use REGIMES as the
     axis labels in canonical order, so it can be compared directly with

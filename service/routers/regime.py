@@ -252,6 +252,68 @@ def get_runs_by_regime(
 # ───────────────────────────────────────────────────────────────────────
 
 
+class TickerRegimeResponse(BaseModel):
+    available: bool
+    ticker: Optional[str] = None
+    as_of: Optional[str] = None
+    current_regime: Optional[str] = None
+    current_label: Optional[str] = None
+    current_blurb: Optional[str] = None
+    current_price: Optional[float] = None
+    current_sma_200: Optional[float] = None
+    realized_vol_30d_pct: Optional[float] = None
+    baseline_vol_pct: Optional[float] = None
+    vol_ratio: Optional[float] = None         # 30d vol / baseline; >1.2 = volatile
+    regime_order: List[str] = []
+    transition_matrix: List[List[float]] = []
+    stationary: Dict[str, float] = {}
+    forecast_30d: Dict[str, float] = {}
+    n_days_observed: Optional[int] = None
+    error: Optional[str] = None
+
+
+@router.get("/ticker/{ticker}", response_model=TickerRegimeResponse)
+def get_ticker_regime(ticker: str) -> TickerRegimeResponse:
+    """Per-ticker regime classification.
+
+    Uses the ticker's OWN 30-day realized volatility vs its 365-day
+    median (instead of VIX, which is market-wide). So NVDA's "volatile"
+    threshold is much higher than KO's — the regime label is calibrated
+    to each name's normal behavior.
+
+    Useful for detecting divergence: the market can be CALM_BULL while
+    NVDA itself is VOLATILE_BULL — meaning even though the broader
+    environment is benign, this specific name is choppy.
+    """
+    snap = regime_module.get_ticker_regime(ticker)
+    if not snap.get("available"):
+        return TickerRegimeResponse(
+            available=False,
+            ticker=ticker.upper(),
+            error=snap.get("error") or "ticker regime unavailable",
+            regime_order=list(regime_module.REGIMES),
+        )
+    current = snap.get("current_regime")
+    return TickerRegimeResponse(
+        available=True,
+        ticker=snap.get("ticker"),
+        as_of=snap.get("as_of"),
+        current_regime=current,
+        current_label=regime_module.REGIME_LABELS.get(current) if current else None,
+        current_blurb=regime_module.REGIME_BLURB.get(current) if current else None,
+        current_price=snap.get("current_price"),
+        current_sma_200=snap.get("current_sma_200"),
+        realized_vol_30d_pct=snap.get("realized_vol_30d_pct"),
+        baseline_vol_pct=snap.get("baseline_vol_pct"),
+        vol_ratio=snap.get("vol_ratio"),
+        regime_order=list(regime_module.REGIMES),
+        transition_matrix=snap.get("transition_matrix", []),
+        stationary=snap.get("stationary", {}),
+        forecast_30d=snap.get("forecast_30d", {}),
+        n_days_observed=snap.get("n_days_observed"),
+    )
+
+
 class RunRegimeResponse(BaseModel):
     run_id: str
     trade_date: str
@@ -261,6 +323,10 @@ class RunRegimeResponse(BaseModel):
     regime_hit_rate_pct: Optional[float] = None
     baseline_hit_rate_pct: Optional[float] = None
     regime_calls_count: Optional[int] = None
+    # Per-ticker regime alongside the market regime
+    ticker_regime: Optional[str] = None
+    ticker_regime_label: Optional[str] = None
+    ticker_vol_ratio: Optional[float] = None
 
 
 @router.get("/run/{run_id}", response_model=RunRegimeResponse)
@@ -279,6 +345,23 @@ def get_run_regime(run_id: str) -> RunRegimeResponse:
     # Fetch the regime-stratified performance to surface this regime's hit rate.
     perf = get_runs_by_regime()  # uses defaults: 30d window, 365d lookback
     row = next((r for r in perf.rows if r.regime == reg), None)
+
+    # Also fetch this ticker's OWN regime so the brief can show
+    # divergence between broad-market and stock-specific environment.
+    ticker_regime = None
+    ticker_regime_label = None
+    ticker_vol_ratio = None
+    ticker = run.get("ticker")
+    if ticker:
+        try:
+            tr = regime_module.get_ticker_regime(ticker)
+            if tr.get("available"):
+                ticker_regime = tr.get("current_regime")
+                ticker_regime_label = regime_module.REGIME_LABELS.get(ticker_regime) if ticker_regime else None
+                ticker_vol_ratio = tr.get("vol_ratio")
+        except Exception as e:
+            logger.warning(f"ticker-regime fetch failed for {ticker}: {e}")
+
     return RunRegimeResponse(
         run_id=run_id,
         trade_date=trade_date,
@@ -288,4 +371,7 @@ def get_run_regime(run_id: str) -> RunRegimeResponse:
         regime_hit_rate_pct=row.hit_rate_pct if row else None,
         baseline_hit_rate_pct=perf.baseline_hit_rate_pct,
         regime_calls_count=row.n_runs if row else None,
+        ticker_regime=ticker_regime,
+        ticker_regime_label=ticker_regime_label,
+        ticker_vol_ratio=ticker_vol_ratio,
     )

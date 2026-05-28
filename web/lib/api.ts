@@ -1541,6 +1541,29 @@ export type RunRegime = {
   regime_hit_rate_pct: number | null;
   baseline_hit_rate_pct: number | null;
   regime_calls_count: number | null;
+  ticker_regime: RegimeName | null;
+  ticker_regime_label: string | null;
+  ticker_vol_ratio: number | null;
+};
+
+export type TickerRegime = {
+  available: boolean;
+  ticker: string | null;
+  as_of: string | null;
+  current_regime: RegimeName | null;
+  current_label: string | null;
+  current_blurb: string | null;
+  current_price: number | null;
+  current_sma_200: number | null;
+  realized_vol_30d_pct: number | null;
+  baseline_vol_pct: number | null;
+  vol_ratio: number | null;
+  regime_order: string[];
+  transition_matrix: number[][];
+  stationary: Record<string, number>;
+  forecast_30d: Record<string, number>;
+  n_days_observed: number | null;
+  error: string | null;
 };
 
 export const Regime = {
@@ -1551,6 +1574,7 @@ export const Regime = {
       `/regime/runs-by-regime?window_days=${windowDays}&lookback_days=${lookbackDays}`,
     ),
   forRun: (runId: string) => request<RunRegime>(`/regime/run/${runId}`),
+  forTicker: (ticker: string) => request<TickerRegime>(`/regime/ticker/${ticker}`),
 };
 
 // ---- 13F institutional holdings (smart-money view) -----------------------
