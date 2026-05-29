@@ -22,9 +22,6 @@ export function Markdown({
   /** Optional brief-specific terms to merge with the global glossary. */
   briefGlossary?: Record<string, string> | null;
 }) {
-  if (!children)
-    return <span className="text-muted text-sm">_(no content)_</span>;
-
   // Merged lookup: global glossary + any brief-specific overrides.
   const lookup = useMemo(() => mergeGlossary(briefGlossary), [briefGlossary]);
 
@@ -48,6 +45,15 @@ export function Markdown({
     }),
     [lookup],
   );
+
+  // Hooks above MUST run unconditionally (Rules of Hooks). Only after they
+  // have been called do we bail on empty content — otherwise an
+  // empty<->non-empty `children` transition (constant on the streaming Run
+  // page and in ChatPanel) would change the hook count between renders and
+  // white-screen React with "rendered more hooks than during the previous
+  // render."
+  if (!children)
+    return <span className="text-muted text-sm">_(no content)_</span>;
 
   return (
     <div className="prose-tight">

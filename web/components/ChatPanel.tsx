@@ -29,6 +29,12 @@ export function ChatPanel({ runId }: { runId: string }) {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
   }, [q.data, pendingText]);
 
+  // Close the stream socket if the panel unmounts mid-answer (e.g. the user
+  // navigates away). Without this the socket leaks and its handlers keep
+  // calling setState on an unmounted component, and the server keeps
+  // streaming tokens nobody reads.
+  useEffect(() => () => wsRef.current?.close(), []);
+
   function send() {
     const question = input.trim();
     if (!question || streaming) return;
@@ -36,8 +42,15 @@ export function ChatPanel({ runId }: { runId: string }) {
     setStreaming(true);
     setPendingText("");
 
+    // Close any prior socket before opening a new one (avoids orphans when
+    // a previous stream is still winding down).
+    wsRef.current?.close();
     const ws = new WebSocket(chatStreamUrl(runId));
     wsRef.current = ws;
+    // Distinguishes a clean finish from a failure: a socket that closed
+    // because the answer is `done` can still fire onerror/onclose, which
+    // would otherwise overwrite the committed answer with an error string.
+    let done = false;
 
     ws.onopen = () => ws.send(JSON.stringify({ question }));
     ws.onmessage = (e) => {
@@ -46,11 +59,13 @@ export function ChatPanel({ runId }: { runId: string }) {
         if (msg.type === "delta") {
           setPendingText((t) => t + msg.text);
         } else if (msg.type === "done") {
+          done = true;
           setStreaming(false);
           setPendingText("");
           ws.close();
           qc.invalidateQueries({ queryKey: ["chat", runId] });
         } else if (msg.type === "error") {
+          done = true;
           setStreaming(false);
           setPendingText(`_(error: ${msg.message})_`);
           ws.close();
@@ -60,10 +75,13 @@ export function ChatPanel({ runId }: { runId: string }) {
       }
     };
     ws.onerror = () => {
+      if (done) return;
       setStreaming(false);
       setPendingText("_(websocket error — is the API up?)_");
     };
-    ws.onclose = () => setStreaming(false);
+    ws.onclose = () => {
+      if (!done) setStreaming(false);
+    };
   }
 
   return (
