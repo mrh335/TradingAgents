@@ -3,11 +3,13 @@
 
 FROM node:20-alpine AS deps
 WORKDIR /build
-COPY web/package.json web/package-lock.json* ./
-# Use --no-audit --no-fund to keep build noise down; --omit=dev is
-# applied via npm ci's behavior with NODE_ENV=production at run time
-# but here we want devDeps because next CLI lives in there.
-RUN npm install --no-audit --no-fund --legacy-peer-deps
+COPY web/package.json web/package-lock.json ./
+# `npm ci` is faster and fully reproducible — it installs straight from
+# the lockfile and errors if package.json and the lock drift out of sync
+# (vs `npm install`, which silently mutates the tree). NODE_ENV is unset
+# in this stage so devDeps (incl. the `next` CLI used by `npm run build`)
+# are installed.
+RUN npm ci --no-audit --no-fund --legacy-peer-deps
 
 FROM node:20-alpine AS builder
 WORKDIR /build
