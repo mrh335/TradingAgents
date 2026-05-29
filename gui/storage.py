@@ -14,7 +14,7 @@ import json
 import sqlite3
 import uuid
 from contextlib import contextmanager
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional
 
@@ -22,7 +22,10 @@ DB_PATH = Path.home() / ".tradingagents" / "gui.db"
 
 
 def _now() -> str:
-    return datetime.utcnow().isoformat(timespec="seconds") + "Z"
+    # tz-aware UTC; datetime.utcnow() is deprecated in Python 3.12+. The
+    # output string is byte-for-byte unchanged ("...T12:00:00Z") so it stays
+    # directly string-comparable with timestamps already in the DB.
+    return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
 
 
 def init_db() -> None:
@@ -1601,8 +1604,8 @@ def reclaim_stale_queue_items(*, older_than_seconds: int = 1800) -> int:
     never reported back, it's safe to retry after enough time.
     Returns the number of rows reverted.
     """
-    cutoff = (datetime.utcnow() - timedelta(seconds=older_than_seconds)
-              ).isoformat(timespec="seconds") + "Z"
+    cutoff = (datetime.now(timezone.utc) - timedelta(seconds=older_than_seconds)
+              ).isoformat(timespec="seconds").replace("+00:00", "Z")
     with _conn() as c:
         cur = c.execute(
             """UPDATE run_queue SET status='pending', claimed_by=NULL, claimed_at=NULL

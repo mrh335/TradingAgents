@@ -10,7 +10,7 @@ from typing import List, Optional
 
 import pandas as pd
 import yfinance as yf
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
 from gui import storage
@@ -137,8 +137,13 @@ def calendar(
     include_earnings: bool = True,
     include_dividends: bool = True,
 ) -> List[CalendarEvent]:
-    start = datetime.strptime(from_, "%Y-%m-%d").date()
-    end = datetime.strptime(to, "%Y-%m-%d").date()
+    try:
+        start = datetime.strptime(from_, "%Y-%m-%d").date()
+        end = datetime.strptime(to, "%Y-%m-%d").date()
+    except ValueError:
+        raise HTTPException(
+            status_code=400, detail="from/to must be YYYY-MM-DD dates"
+        )
 
     if tickers:
         tlist = [t.strip().upper() for t in tickers.split(",") if t.strip()]

@@ -17,6 +17,7 @@ hasn't subscribed yet (e.g. a paper-only ticker that isn't in the real book).
 
 from __future__ import annotations
 
+import asyncio
 from typing import List, Optional
 
 from fastapi import APIRouter, HTTPException
@@ -106,7 +107,10 @@ def list_paper_positions(include_closed: bool = False) -> List[PaperPosition]:
 async def open_paper_position(req: PaperOpenRequest) -> PaperPosition:
     entry = req.entry_price
     if entry is None:
-        entry = _live_price(req.ticker)
+        # _live_price() does a synchronous yfinance fetch on a cache miss;
+        # offload it so it doesn't block the event loop (this handler must
+        # stay async for the broadcaster.subscribe await below).
+        entry = await asyncio.to_thread(_live_price, req.ticker)
         if entry is None:
             raise HTTPException(
                 status_code=400,
