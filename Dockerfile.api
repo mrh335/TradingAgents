@@ -63,13 +63,20 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libcairo2 \
     && rm -rf /var/lib/apt/lists/*
 
-COPY --from=builder /opt/venv /opt/venv
+# Create the user + workdir BEFORE copying the venv and source so these
+# layers stay cached across source-only rebuilds (they don't depend on app
+# content). Previously they sat after the venv COPY, so every backend edit
+# re-ran groupadd/useradd + WORKDIR — ~100s each on the NAS's slow disk.
+RUN groupadd --gid 1000 appuser && useradd --uid 1000 --gid 1000 --create-home appuser
+WORKDIR /home/appuser/app
 ENV PATH="/opt/venv/bin:$PATH"
 
-RUN groupadd --gid 1000 appuser && useradd --uid 1000 --gid 1000 --create-home appuser
-USER appuser
-WORKDIR /home/appuser/app
+# Heavy COPYs last: the venv COPY busts only when deps change; the source
+# COPY busts on every code edit. Keeping them after the cheap layers above
+# means a backend edit only re-runs these two (plus the image export).
+COPY --from=builder /opt/venv /opt/venv
 COPY --from=builder --chown=appuser:appuser /build .
+USER appuser
 
 EXPOSE 8000
 CMD ["uvicorn", "service.app:app", "--host", "0.0.0.0", "--port", "8000"]
