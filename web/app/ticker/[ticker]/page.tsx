@@ -232,7 +232,7 @@ export default function TickerDetailPage() {
             <table className="w-full text-sm">
               <tbody>
                 <Row label="52-week range">
-                  ${snapshot.data.low_52w} – ${snapshot.data.high_52w}
+                  ${snapshot.data.low_52w?.toFixed(2) ?? "—"} – ${snapshot.data.high_52w?.toFixed(2) ?? "—"}
                   {snapshot.data.range_position_pct !== null && (
                     <span className="text-xs text-muted ml-2">
                       ({snapshot.data.range_position_pct.toFixed(0)}% of the way up)

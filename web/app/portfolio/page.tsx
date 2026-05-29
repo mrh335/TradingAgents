@@ -101,7 +101,7 @@ export default function PortfolioPage() {
                   <td className="py-2 px-3 text-right tabular-nums">{p.live_price ? `$${p.live_price.toFixed(2)}` : "—"}</td>
                   <td className="py-2 px-3 text-right tabular-nums">{p.value ? `$${p.value.toFixed(2)}` : "—"}</td>
                   <td className={`py-2 px-3 text-right tabular-nums ${p.unrealized == null ? "" : sign ? "text-success" : "text-danger"}`}>
-                    {p.unrealized != null ? `${sign ? "+" : ""}$${p.unrealized.toFixed(2)} (${p.unrealized_pct?.toFixed(2)}%)` : "—"}
+                    {p.unrealized != null ? `${sign ? "+" : ""}$${p.unrealized.toFixed(2)} (${p.unrealized_pct != null ? p.unrealized_pct.toFixed(2) : "—"}%)` : "—"}
                   </td>
                   <td className="py-2 px-3 text-muted">{p.account ?? ""}</td>
                   <td className="py-2 px-3 text-right">
@@ -129,7 +129,7 @@ function SummaryCards({ summary }: { summary?: PortfolioSummary }) {
         label="Unrealised P&L"
         value={
           summary.unrealized_pnl != null
-            ? `${sign ? "+" : ""}$${summary.unrealized_pnl.toFixed(2)} (${summary.unrealized_pnl_pct?.toFixed(2)}%)`
+            ? `${sign ? "+" : ""}$${summary.unrealized_pnl.toFixed(2)} (${summary.unrealized_pnl_pct != null ? summary.unrealized_pnl_pct.toFixed(2) : "—"}%)`
             : "—"
         }
         accent={sign ? "success" : "danger"}
