@@ -116,6 +116,17 @@ export default function RunPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [settings.data]);
 
+  // Seed the ticker from a ?ticker= query param — links from the watchlist
+  // and ticker-detail pages pass it, and without this the form silently
+  // stayed on NVDA (easy to launch a costly analysis on the wrong ticker).
+  // Read window.location.search instead of useSearchParams() to avoid Next
+  // 15's Suspense-boundary build requirement. One-time on mount.
+  useEffect(() => {
+    const t = new URLSearchParams(window.location.search).get("ticker");
+    if (t) setForm((f) => ({ ...f, ticker: t.toUpperCase() }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const [runId, setRunId] = useState<string | null>(null);
   const [ui, setUi] = useState<RunUiState>(EMPTY_UI);
   const [activeTab, setActiveTab] = useState<SectionKey | "debate" | "risk" | "log">(
