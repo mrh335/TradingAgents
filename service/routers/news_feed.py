@@ -9,6 +9,7 @@ sorts newest-first. Cached for 5 minutes per (ticker) to keep this cheap.
 
 from __future__ import annotations
 
+import threading
 import time
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
@@ -22,21 +23,26 @@ from service.streaming import _fetch_news
 router = APIRouter(prefix="/news", tags=["news"])
 
 
-# Per-ticker memoisation: ticker -> (timestamp, articles)
+# Per-ticker memoisation: ticker -> (timestamp, articles).
+# Guarded by a lock: feed() runs in FastAPI's threadpool, so concurrent
+# requests for overlapping tickers otherwise race on this dict.
 _CACHE: Dict[str, Tuple[float, List[Dict]]] = {}
 _TTL = 300.0  # 5 minutes
+_CACHE_LOCK = threading.Lock()
 
 
 def _cached_articles(ticker: str) -> List[Dict]:
     now = time.time()
-    cached = _CACHE.get(ticker)
+    with _CACHE_LOCK:
+        cached = _CACHE.get(ticker)
     if cached and now - cached[0] < _TTL:
         return cached[1]
     try:
         articles = _fetch_news(ticker)
     except Exception:
         articles = []
-    _CACHE[ticker] = (now, articles)
+    with _CACHE_LOCK:
+        _CACHE[ticker] = (now, articles)
     return articles
 
 
