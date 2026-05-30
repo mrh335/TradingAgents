@@ -343,7 +343,11 @@ def get_run_regime(run_id: str) -> RunRegimeResponse:
         return RunRegimeResponse(run_id=run_id, trade_date=trade_date)
 
     # Fetch the regime-stratified performance to surface this regime's hit rate.
-    perf = get_runs_by_regime()  # uses defaults: 30d window, 365d lookback
+    # Pass explicit ints: calling the get_runs_by_regime route handler from
+    # Python (not via HTTP) meant its FastAPI Query(...) defaults became the
+    # actual arg values, so lookback_days was a Query object and
+    # `timedelta(days=Query)` raised TypeError → every request 500'd.
+    perf = get_runs_by_regime(window_days=30, lookback_days=365, limit=500)
     row = next((r for r in perf.rows if r.regime == reg), None)
 
     # Also fetch this ticker's OWN regime so the brief can show
