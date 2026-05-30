@@ -30,7 +30,7 @@ from __future__ import annotations
 import json
 import logging
 import os
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException
@@ -57,7 +57,7 @@ def _build_context_snapshot() -> Dict[str, Any]:
     if the model needs to drill in (Claude Desktop can hit
     /sidecars/run/{id} for that)."""
     snapshot: Dict[str, Any] = {
-        "as_of": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+        "as_of": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
     }
 
     # ── Open positions ──
@@ -143,7 +143,7 @@ def _build_context_snapshot() -> Dict[str, Any]:
     try:
         alerts = storage.list_news_alerts(impact="high", limit=30)
         # Filter to last week.
-        cutoff = (datetime.utcnow() - timedelta(days=7)).isoformat()
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
         snapshot["high_impact_news"] = [
             {
                 "ticker": a["ticker"],
