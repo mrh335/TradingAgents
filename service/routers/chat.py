@@ -14,6 +14,7 @@ WebSocket protocol:
 
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 from typing import List
@@ -83,15 +84,41 @@ async def stream_chat(ws: WebSocket, run_id: str) -> None:
             if m["role"] in ("user", "assistant")
         ][:-1]  # exclude the just-added question
 
-        # Stream the answer.
+        # Stream the answer. chat_mod.stream_response is a *synchronous*
+        # generator (it drives llm.stream under the hood). Iterating it
+        # directly here blocked the entire event loop for the full
+        # multi-second answer — every other request, price/news WS push, and
+        # poller stalled. Run it in a worker thread and pump chunks back
+        # through a queue. The delta/error/done protocol is unchanged.
         full_text = ""
+        chunk_q: "asyncio.Queue[tuple]" = asyncio.Queue()
+        loop = asyncio.get_running_loop()
+        DONE = object()
+
+        def _produce() -> None:
+            try:
+                for chunk in chat_mod.stream_response(
+                    state, meta, history, question, tool_trace=tool_trace
+                ):
+                    loop.call_soon_threadsafe(chunk_q.put_nowait, ("delta", chunk))
+            except Exception as exc:  # noqa: BLE001 — relayed to the client
+                loop.call_soon_threadsafe(chunk_q.put_nowait, ("error", str(exc)))
+            finally:
+                loop.call_soon_threadsafe(chunk_q.put_nowait, (DONE, None))
+
+        producer = asyncio.create_task(asyncio.to_thread(_produce))
         try:
-            for chunk in chat_mod.stream_response(state, meta, history, question, tool_trace=tool_trace):
-                full_text += chunk
-                await ws.send_text(json.dumps({"type": "delta", "text": chunk}))
-        except Exception as e:
-            await ws.send_text(json.dumps({"type": "error", "message": str(e)}))
-            return
+            while True:
+                kind, data = await chunk_q.get()
+                if kind is DONE:
+                    break
+                if kind == "error":
+                    await ws.send_text(json.dumps({"type": "error", "message": data}))
+                    return
+                full_text += data
+                await ws.send_text(json.dumps({"type": "delta", "text": data}))
+        finally:
+            await producer  # let the worker thread finish before returning
 
         model_label = chat_mod.quick_think_label()
         storage.add_chat_message(run_id=run_id, role="assistant", content=full_text, model=model_label)
