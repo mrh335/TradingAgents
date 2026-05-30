@@ -2,24 +2,24 @@
 
 > ## ⏭️ START HERE (added 2026-05-30, end of session)
 >
-> **Git is clean and synced: HEAD = origin/main = `b61cb50`.** All work is
+> **Git is clean and synced: HEAD = origin/main = `3f1a2e8`.** All work is
 > committed + pushed + deployed; all containers healthy (api/web/mcp).
 >
-> **The ONE open bug to chase first:** `GET /regime/run/{run_id}` returns
-> **500** (and takes ~15s — it times out). Repro:
-> `curl http://192.168.2.34:8001/regime/run/claude-7e3b9a42`. Everything
-> else smoke-tested 200/correct (health, charts json+png, calendar 400/200,
-> portfolio, web). This is almost certainly the **regime per-call backtest
-> sweep**: `get_run_regime` → `get_runs_by_regime()` fans out a full-history
-> backtest over many runs (yfinance + HMM), which is slow and can 500 on a
-> cold cache or a yfinance hiccup. Fix path: read the error first
-> (`docker logs --tail 100 tradingagents-api` on the NAS, or add a
-> try/except that surfaces the exception), then cache the
-> `get_runs_by_regime()` aggregate (it's slow-changing) or pass only this
-> run's regime row instead of recomputing the whole stratification. This was
-> on the original audit list; I did NOT fix it (an earlier "regime duplicate
-> sweep" note was a misread, but the *single* sweep here is still expensive
-> and is the live 500).
+> **No known open bugs.** Final consolidated smoke (all 200/correct):
+> health, charts json+png, calendar 400(bad)/200(ok), portfolio,
+> regime/run, web. 45 unit tests pass.
+>
+> **Last bug fixed (`3f1a2e8`):** `GET /regime/run/{run_id}` was 500ing —
+> `get_run_regime` called the `get_runs_by_regime` *route handler* directly
+> from Python, so its FastAPI `Query(...)` defaults became the literal arg
+> values; `timedelta(days=<Query object>)` raised TypeError. Fixed by
+> passing explicit ints. **Lesson for next time: never call a FastAPI route
+> handler as a plain function** — extract a helper, or pass real args. Worth
+> grepping for other intra-Python calls of `@router`-decorated functions.
+>
+> **Possible follow-up (NOT a bug):** that regime call does iterate recent
+> runs each request; if the brief panel feels slow, cache the
+> `get_runs_by_regime` aggregate (slow-changing) rather than recomputing.
 >
 > **⚠️ TOOL-CHANNEL HAZARD (cost me a lot this session — read §8 too):**
 > on this network share, **parallel/batched tool calls return scrambled,
