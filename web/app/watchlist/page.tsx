@@ -59,7 +59,7 @@ export default function WatchlistPage() {
       for (const ws of sockets.values()) ws.close();
       sockets.clear();
     };
-  }, [list.data]);
+  }, [(list.data ?? []).map((e) => e.ticker).join(",")]);
 
   const add = useMutation({
     mutationFn: () => Watchlist.add({ ticker: newTicker.trim(), notes: newNotes.trim() || undefined }),

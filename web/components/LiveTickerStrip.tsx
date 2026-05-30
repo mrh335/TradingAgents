@@ -42,7 +42,7 @@ export function LiveTickerStrip() {
             title={`Last polled: ${p.polled_at ? new Date(p.polled_at * 1000).toLocaleTimeString() : "—"}`}
           >
             <span className="font-mono font-semibold">{p.ticker}</span>
-            <span className="tabular-nums">${p.price.toFixed(2)}</span>
+            <span className="tabular-nums">${Number.isFinite(p.price) ? p.price.toFixed(2) : "—"}</span>
             {p.change_pct !== null && (
               <span
                 className={`tabular-nums ${
