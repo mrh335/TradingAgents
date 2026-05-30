@@ -242,8 +242,8 @@ function SummaryPanel({
       {summary ? (
         <>
           {summary.bullets_md ? (
-            <div className="prose prose-sm max-w-none whitespace-pre-line text-sm">
-              {summary.bullets_md}
+            <div className="text-sm">
+              <Markdown>{summary.bullets_md}</Markdown>
             </div>
           ) : pending ? (
             <div className="text-sm text-muted">
