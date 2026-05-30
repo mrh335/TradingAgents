@@ -171,6 +171,17 @@ export default function RunPage() {
     ws.onerror = () => {
       setUi((u) => ({ ...u, error: "WebSocket error — check the API server" }));
     };
+    // Without onclose, a socket the server closes mid-run (network blip, API
+    // restart) leaves the UI stuck on "Streaming…" forever. The functional
+    // setUi reads current state, so we only surface this when the run hadn't
+    // already finished or errored.
+    ws.onclose = () => {
+      setUi((u) =>
+        u.done || u.error
+          ? u
+          : { ...u, error: "Connection lost before the run finished — reload to reconnect." },
+      );
+    };
     return () => {
       ws.close();
     };
