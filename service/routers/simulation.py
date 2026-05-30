@@ -24,7 +24,7 @@ DELETE /sim/{id}      — delete
 from __future__ import annotations
 
 import json
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 import numpy as np
@@ -160,7 +160,7 @@ def _simulate(req: SimRunRequest) -> SimResult:
     baseline_return_pct = (final.baseline_spy / req.starting_capital - 1) * 100
 
     return SimResult(
-        name=req.name or f"sim @ {datetime.utcnow().isoformat(timespec='seconds')}Z",
+        name=req.name or f"sim @ {datetime.now(timezone.utc).isoformat(timespec='seconds')}",
         starting_capital=req.starting_capital,
         expected_final_value=final.portfolio,
         expected_return_pct=expected_return_pct,
