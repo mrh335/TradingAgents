@@ -2,14 +2,15 @@
 
 > ## ⏭️ START HERE (added 2026-05-30, end of session)
 >
-> **Git is clean and synced: HEAD = origin/main = `3f1a2e8`.** All work is
+> **Git is clean and synced (HEAD = origin/main).** All work is
 > committed + pushed + deployed; all containers healthy (api/web/mcp).
 >
-> **No known open bugs.** Final consolidated smoke (all 200/correct):
-> health, charts json+png, calendar 400(bad)/200(ok), portfolio,
-> regime/run, web. 45 unit tests pass.
+> **No known open bugs.** Final consolidated live smoke — ALL correct:
+> health 200, charts json 200 + png 200, portfolio 200, regime/run 200,
+> calendar 200(ok)/400(bad-input), news/feed 200, paper/summary 200,
+> web 200. 45 unit tests pass; chat WS E2E streamed (deltas=4).
 >
-> **Last bug fixed (`3f1a2e8`):** `GET /regime/run/{run_id}` was 500ing —
+> **Last bug fixed (`836498d`):** `GET /regime/run/{run_id}` was 500ing —
 > `get_run_regime` called the `get_runs_by_regime` *route handler* directly
 > from Python, so its FastAPI `Query(...)` defaults became the literal arg
 > values; `timedelta(days=<Query object>)` raised TypeError. Fixed by
