@@ -125,23 +125,10 @@ def _collect_decision_history(ticker: str, lookback_days: int) -> dict:
     }
 
 
-@router.get("/decisions/{ticker}")
-def decisions_data(ticker: str, lookback_days: int = 180) -> dict:
-    """Return the raw data the decision-history chart visualises.
-
-    JSON shape:
-        {
-          "ticker": "NVDA", "lookback_days": 180,
-          "fetched_at": "...",
-          "decisions": [{trade_date, run_id, decision, provider}, ...],
-          "price_series": [{date, close}, ...]
-        }
-
-    Use this for client-side rendering (Recharts / Chart.js in the
-    Next.js webapp). For an immediately-viewable image, hit
-    ``/charts/decisions/{ticker}.png`` instead.
-    """
-    return _collect_decision_history(ticker, lookback_days)
+# NOTE: the JSON `/decisions/{ticker}` route is registered at the END of
+# this file (below the .png and .csv routes). Starlette matches routes in
+# registration order, and the bare `{ticker}` param (regex `[^/]+`) would
+# otherwise greedily match `NVDA.png` / `NVDA.csv` and shadow those routes.
 
 
 @router.get("/decisions/{ticker}.png")

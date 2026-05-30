@@ -419,7 +419,7 @@ function CorrelationGrid({
           {data.tickers.map((rowTicker, i) => (
             <tr key={rowTicker}>
               <th className="p-1.5 text-right font-mono text-[11px]">{rowTicker}</th>
-              {data.matrix[i].map((c, j) => (
+              {(data.matrix[i] ?? []).map((c, j) => (
                 <td
                   key={j}
                   className="p-1.5 text-center tabular-nums font-mono"
