@@ -320,9 +320,11 @@ def delete_run(run_id: str, delete_files: bool = True) -> dict:
     except Exception:
         pass
 
-    with sqlite3.connect(storage.DB_PATH) as c:
+    # Use the tuned connection (WAL + 10s busy_timeout) so deleting a run
+    # while a batch is writing doesn't hit "database is locked". A raw
+    # sqlite3.connect() here used the default 5s timeout and no WAL.
+    with storage._conn() as c:
         c.execute("DELETE FROM runs WHERE run_id=?", (run_id,))
-        c.commit()
 
     return {
         "deleted_run": run_id,

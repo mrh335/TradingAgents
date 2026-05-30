@@ -159,16 +159,17 @@ class RunnerPool:
         for m in active:
             m.handle.cancel()
         # Mark queued rows as error to skip them, finalize the batch.
+        # Use the tuned connection (WAL + busy_timeout) — a raw
+        # sqlite3.connect here could hit "database is locked" against a
+        # batch actively writing runs.
         try:
-            import sqlite3
-            with sqlite3.connect(storage.DB_PATH) as conn:
+            with storage._conn() as conn:
                 cur = conn.execute(
                     "UPDATE runs SET status='error', error_message='cancelled with batch' "
                     "WHERE batch_id=? AND status='queued'",
                     (batch_id,),
                 )
                 count = cur.rowcount
-                conn.commit()
         except Exception:
             count = 0
         storage.cancel_batch(batch_id)
