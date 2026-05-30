@@ -54,7 +54,13 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   if (res.status === 204 || res.headers.get("content-length") === "0") {
     return undefined as T;
   }
-  return (await res.json()) as T;
+  // A 200 can still carry an empty/non-JSON body (proxy HTML, void
+  // endpoints). Degrade to undefined instead of throwing "Unexpected token <".
+  try {
+    return (await res.json()) as T;
+  } catch {
+    return undefined as T;
+  }
 }
 
 // ---- Runs ---------------------------------------------------------------

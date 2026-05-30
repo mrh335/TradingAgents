@@ -222,10 +222,10 @@ function SimResultCard({ sim }: { sim: SimDetail }) {
               <tr key={i} className="border-t border-border">
                 <td className="py-1 px-2 font-semibold">{t.ticker}</td>
                 <td className="py-1 px-2 text-right">{t.shares}</td>
-                <td className="py-1 px-2 text-right">${t.entry_price.toFixed(2)}</td>
-                <td className="py-1 px-2 text-right">${t.cost.toFixed(2)}</td>
-                <td className="py-1 px-2 text-right">{(t.mu_annual * 100).toFixed(2)}%</td>
-                <td className="py-1 px-2 text-right">{(t.sigma_annual * 100).toFixed(2)}%</td>
+                <td className="py-1 px-2 text-right">{t.entry_price != null ? `$${t.entry_price.toFixed(2)}` : "—"}</td>
+                <td className="py-1 px-2 text-right">{t.cost != null ? `$${t.cost.toFixed(2)}` : "—"}</td>
+                <td className="py-1 px-2 text-right">{t.mu_annual != null ? (t.mu_annual * 100).toFixed(2) : "—"}%</td>
+                <td className="py-1 px-2 text-right">{t.sigma_annual != null ? (t.sigma_annual * 100).toFixed(2) : "—"}%</td>
               </tr>
             ))}
           </tbody>

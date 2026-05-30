@@ -254,7 +254,7 @@ def _fetch_revisions(ticker: str) -> List[EstimateRevision]:
     except Exception as e:
         logger.warning(f"eps_revisions fetch failed {ticker}: {e}")
 
-    if (ee is None or ee.empty) and (er is None or er.empty):
+    if (ee is None or getattr(ee, "empty", True)) and (er is None or getattr(er, "empty", True)):
         return []
 
     def _safe_int(v: Any) -> Optional[int]:
@@ -270,8 +270,8 @@ def _fetch_revisions(ticker: str) -> List[EstimateRevision]:
 
     out: List[EstimateRevision] = []
     for raw_idx, label in horizon_labels.items():
-        ee_row = ee.loc[raw_idx] if (ee is not None and raw_idx in ee.index) else None
-        er_row = er.loc[raw_idx] if (er is not None and raw_idx in er.index) else None
+        ee_row = ee.loc[raw_idx] if (ee is not None and raw_idx in getattr(ee, "index", [])) else None
+        er_row = er.loc[raw_idx] if (er is not None and raw_idx in getattr(er, "index", [])) else None
 
         if ee_row is None and er_row is None:
             continue

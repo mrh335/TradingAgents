@@ -70,9 +70,10 @@ async def combined_stream(ws: WebSocket, ticker: str) -> None:
     """Convenience: subscribes to both ``price`` and ``news`` for a ticker
     and multiplexes both streams onto a single WebSocket."""
     await ws.accept()
-    pq = await broadcaster.subscribe("price", ticker)
-    nq = await broadcaster.subscribe("news", ticker)
+    pq = nq = None
     try:
+        pq = await broadcaster.subscribe("price", ticker)
+        nq = await broadcaster.subscribe("news", ticker)
         async def relay(q):
             while True:
                 ev = await q.get()
@@ -81,8 +82,13 @@ async def combined_stream(ws: WebSocket, ticker: str) -> None:
     except WebSocketDisconnect:
         pass
     finally:
-        await broadcaster.unsubscribe("price", ticker, pq)
-        await broadcaster.unsubscribe("news", ticker, nq)
+        # Subscribe-inside-try: if the 2nd subscribe raised, the 1st is
+        # still unsubscribed here (previously it leaked a queue the poller
+        # kept filling forever).
+        if pq is not None:
+            await broadcaster.unsubscribe("price", ticker, pq)
+        if nq is not None:
+            await broadcaster.unsubscribe("news", ticker, nq)
         try:
             await ws.close()
         except RuntimeError:
