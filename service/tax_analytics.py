@@ -63,21 +63,52 @@ class Lot:
         return (price - self.cost_basis_per_share) * self.shares
 
 
-def lot_from_planner(d: dict) -> Optional[Lot]:
+def _compute_term(acquired_iso: str, today_iso: str = "") -> str:
+    """Long if held >1 year, else short. The planner serializes term=None, so
+    we derive it from the acquisition date. today_iso is injectable for tests.
+    """
+    if not acquired_iso:
+        return "long"
+    try:
+        from datetime import date
+        ay, am, ad = (int(x) for x in acquired_iso[:10].split("-"))
+        acq = date(ay, am, ad)
+        if today_iso:
+            ty, tm, td = (int(x) for x in today_iso[:10].split("-"))
+            today = date(ty, tm, td)
+        else:
+            today = date.today()
+        return "long" if (today - acq).days > 365 else "short"
+    except Exception:
+        return "long"
+
+
+def lot_from_planner(d: dict, today_iso: str = "") -> Optional[Lot]:
     """Build a Lot from a planner /investment-ledger/lots item. Returns None
-    for closed/zero lots so callers can filter."""
-    rem = d.get("remaining_shares")
+    for closed/zero lots so callers can filter.
+
+    The planner's _lot() serializer names the open-share field ``shares_remaining``
+    (NOT remaining_shares / shares_remaining_this_lot) and always returns
+    ``term: None`` — so we read the right field and DERIVE term from the
+    purchase date. (Getting either wrong silently zeroes the whole feature or
+    understates short-term tax.)
+    """
+    rem = d.get("shares_remaining")
+    if rem is None:
+        rem = d.get("remaining_shares")
     if rem is None:
         rem = d.get("shares_remaining_this_lot")
     rem = float(rem or 0)
     if rem <= 0 or d.get("sale_date"):
         return None
+    acquired = str(d.get("purchase_date") or d.get("grant_date") or "")[:10]
+    term = (d.get("term") or "").lower() or _compute_term(acquired, today_iso)
     return Lot(
         symbol=(d.get("symbol") or "").upper(),
         shares=rem,
         cost_basis_per_share=float(d.get("cost_basis_per_share") or 0),
-        acquired_date=str(d.get("purchase_date") or d.get("grant_date") or "")[:10],
-        term=(d.get("term") or "long").lower(),
+        acquired_date=acquired,
+        term=term,
         account=d.get("account_label") or "",
         plan_type=d.get("plan_type") or "",
     )

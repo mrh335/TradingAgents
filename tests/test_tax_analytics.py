@@ -46,6 +46,35 @@ def test_lot_from_planner_filters_closed_and_zero():
     assert lot.symbol == "AAPL" and lot.shares == 100 and lot.term == "long"
 
 
+def test_lot_from_planner_real_shape_and_derives_term():
+    """Guards the exact bug that zeroed the feature: the planner serializes the
+    open-share field as `shares_remaining` (not remaining_shares) and returns
+    term=None, so term must be DERIVED from purchase_date."""
+    # Real planner _lot() shape:
+    long_lot = tx.lot_from_planner({
+        "symbol": "AAPL", "shares_remaining": 500, "cost_basis_per_share": 45.77,
+        "purchase_date": "2019-06-01", "sale_date": None, "term": None,
+        "plan_type": "RSU", "account_label": "TOD",
+    }, today_iso="2026-05-31")
+    assert long_lot is not None
+    assert long_lot.shares == 500
+    assert long_lot.term == "long"     # held ~7 years
+
+    short_lot = tx.lot_from_planner({
+        "symbol": "AAPL", "shares_remaining": 200, "cost_basis_per_share": 182.40,
+        "purchase_date": "2026-02-01", "sale_date": None, "term": None,
+        "plan_type": "RSU",
+    }, today_iso="2026-05-31")
+    assert short_lot.term == "short"   # held <1 year
+
+
+def test_compute_term_boundary():
+    # Exactly 365 days = still short; 366 = long.
+    assert tx._compute_term("2025-05-31", today_iso="2026-05-31") == "short"  # 365 days
+    assert tx._compute_term("2025-05-30", today_iso="2026-05-31") == "long"   # 366 days
+    assert tx._compute_term("", today_iso="2026-05-31") == "long"             # unknown -> long
+
+
 def test_position_summary_splits_lt_st():
     s = tx.position_summary(aapl_lots(), PRICE)
     assert s["shares"] == pytest.approx(4325.589, abs=0.01)
