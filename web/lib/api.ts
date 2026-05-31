@@ -28,6 +28,10 @@ import type {
   SimRunRequest,
   WatchlistEntry,
 } from "./types";
+import type {
+  BacktestRequest, BacktestResponse,
+  MonteCarloRequest, MonteCarloResponse, PortfolioActual,
+} from "./simTypes";
 
 // Two ways the analysis can run. "incremental" injects the memory-log
 // past_context into the Portfolio Manager prompt (default, efficient).
@@ -389,6 +393,14 @@ export const Simulation = {
   get: (id: number) => request<SimDetail>(`/sim/${id}`),
   delete: (id: number) =>
     request<{ deleted: number }>(`/sim/${id}`, { method: "DELETE" }),
+  // Portfolio Lab: historical backtest + risk stats across allocation scenarios.
+  backtest: (req: BacktestRequest) =>
+    request<BacktestResponse>("/sim/backtest", { method: "POST", body: JSON.stringify(req) }),
+  // Forward Monte Carlo from the historical return distribution.
+  montecarlo: (req: MonteCarloRequest) =>
+    request<MonteCarloResponse>("/sim/montecarlo", { method: "POST", body: JSON.stringify(req) }),
+  // Seed "your actual mix" from live positions (weights by value).
+  portfolioActual: () => request<PortfolioActual>("/sim/portfolio-actual"),
 };
 
 // ---- Run queue (Claude Desktop / Claude Code worker handoff) ----------
