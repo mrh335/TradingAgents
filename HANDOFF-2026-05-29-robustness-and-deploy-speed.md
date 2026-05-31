@@ -5,6 +5,33 @@
 > **Git is clean and synced (HEAD = origin/main).** All work is
 > committed + pushed + deployed; all containers healthy (api/web/mcp).
 >
+> **★ NEW FEATURE LIVE — Portfolio Lab at `/simulation`** (commits
+> 2d2e05b → d5d41cf). A professional what-if/backtest/Monte-Carlo suite:
+> - Backend engine `service/portfolio_analytics.py` — pure numpy/pandas
+>   (no scipy/dep added), **18 unit tests** in
+>   `tests/test_portfolio_analytics.py`: CAGR, vol, Sharpe, Sortino, Calmar,
+>   max-drawdown, beta/alpha/correlation, windowed (1/2/3/5y) returns, and
+>   Monte Carlo (bootstrap + normal) with VaR/CVaR. Verified exact (beta=1
+>   self / beta=2 double-market, MC determinism, VaR≤CVaR).
+> - Endpoints on `/sim`: `POST /sim/backtest`, `POST /sim/montecarlo`,
+>   `GET /sim/portfolio-actual` (seeds "your actual mix" from live
+>   positions). All return 200 live; backtest E2E with the real book gives
+>   coherent numbers (your mix 6y CAGR 26.4%/Sharpe 0.93/maxDD −33%;
+>   big-6 tech 31.6%; QQQ 18.7%; SPY 11.1%).
+> - Frontend `web/app/simulation/page.tsx` — scenario builder seeded with
+>   4 presets, equity-curve vs SPY, risk-stat table, trailing-window table,
+>   correlation heatmap, Monte Carlo fan + outcome distribution. Types in
+>   `web/lib/simTypes.ts`. `/simulation` renders 200 on a clean build.
+> - **Two route-shadow gotchas fixed:** `/sim/{sid:int}` converter so
+>   `/sim/portfolio-actual` resolves (was 422). And a self-inflicted broken
+>   build (page committed before api.ts methods existed) was repaired in
+>   d5d41cf — lesson: when a page + its api client land together, build web
+>   BEFORE trusting the commit.
+> - **Follow-up ideas the user wants next:** efficient frontier, drawdown-
+>   over-time chart, tax-aware de-risking (model the AAPL embedded gain),
+>   DCA vs lump-sum, rolling-returns, save-scenario-as-paper-trades.
+> - 63 backend unit tests pass total (`py -3 -m pytest tests/`).
+>
 > **No known open bugs.** Final consolidated live smoke — ALL correct:
 > health 200, charts json 200 + png 200, portfolio 200, regime/run 200,
 > calendar 200(ok)/400(bad-input), news/feed 200, paper/summary 200,
