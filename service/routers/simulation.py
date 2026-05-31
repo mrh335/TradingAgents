@@ -34,8 +34,38 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from gui import storage
+from service import portfolio_analytics as pa
 
 router = APIRouter(prefix="/sim", tags=["simulation"])
+
+# Cache yfinance pulls briefly — backtest + montecarlo + correlation on the
+# same page hit the same tickers repeatedly. Keyed by (sorted tickers, period).
+_PRICE_CACHE: Dict[str, "tuple[float, pd.DataFrame]"] = {}
+_PRICE_TTL = 600.0  # 10 min
+import threading as _threading
+import time as _time
+_PRICE_LOCK = _threading.Lock()
+
+
+def _fetch_prices(tickers: List[str], period: str = "6y") -> pd.DataFrame:
+    """Auto-adjusted (total-return) daily closes for tickers. Cached + locked."""
+    key = ",".join(sorted(set(tickers))) + "|" + period
+    with _PRICE_LOCK:
+        hit = _PRICE_CACHE.get(key)
+        if hit and (_time.time() - hit[0]) < _PRICE_TTL:
+            return hit[1]
+    raw = yf.download(sorted(set(tickers)), period=period, interval="1d",
+                      auto_adjust=True, progress=False)
+    if raw is None or len(raw) == 0:
+        raise HTTPException(status_code=502, detail="no price data returned from yfinance")
+    close = raw["Close"] if isinstance(raw.columns, pd.MultiIndex) else raw
+    # Single-ticker download returns a Series-like; normalize to DataFrame.
+    if isinstance(close, pd.Series):
+        close = close.to_frame(name=sorted(set(tickers))[0])
+    close = close.dropna(how="all")
+    with _PRICE_LOCK:
+        _PRICE_CACHE[key] = (_time.time(), close)
+    return close
 
 
 # ---- Schemas ---------------------------------------------------------
@@ -224,3 +254,172 @@ def get_sim(sid: int) -> SimDetail:
 def delete_sim(sid: int) -> dict:
     storage.delete_simulation(sid)
     return {"deleted": sid}
+
+
+# =====================================================================
+# Historical backtest + risk statistics  (NEW)
+# =====================================================================
+
+class ScenarioSpec(BaseModel):
+    name: str
+    # ticker -> weight (need not sum to 1; engine normalizes). Non-positive
+    # weights are dropped.
+    weights: Dict[str, float]
+
+
+class BacktestRequest(BaseModel):
+    scenarios: List[ScenarioSpec]
+    benchmark: str = "SPY"
+    period: str = Field(default="6y", description="yfinance period, e.g. 5y/6y/10y")
+    initial: float = Field(default=100_000.0, gt=0)
+    rebalance: str = Field(default="none", description="'none' (buy & hold) or 'daily'")
+    windows: List[int] = Field(default=[1, 2, 3, 5])
+
+
+@router.post("/backtest")
+def backtest(req: BacktestRequest) -> dict:
+    """Real historical equity curves + a professional risk-stat pack for each
+    allocation scenario, all over the same window for apples-to-apples."""
+    if not req.scenarios:
+        raise HTTPException(status_code=400, detail="at least one scenario required")
+
+    tickers = sorted({t for s in req.scenarios for t in s.weights} | {req.benchmark})
+    prices = _fetch_prices(tickers, req.period)
+    if req.benchmark not in prices.columns:
+        raise HTTPException(status_code=502,
+                            detail=f"no price data for benchmark {req.benchmark}")
+    rets = pa.daily_returns(prices)
+    bench_rets = rets[req.benchmark].dropna()
+
+    # Downsample equity curve to <=180 points to keep payloads small.
+    def thin(curve: pd.Series, n: int = 180) -> list:
+        step = max(1, len(curve) // n)
+        pts = []
+        for i in range(0, len(curve), step):
+            pts.append({"date": str(curve.index[i].date()),
+                        "value": pa._safe(float(curve.iloc[i]))})
+        if pts and pts[-1]["date"] != str(curve.index[-1].date()):
+            pts.append({"date": str(curve.index[-1].date()),
+                        "value": pa._safe(float(curve.iloc[-1]))})
+        return pts
+
+    results = []
+    for s in req.scenarios:
+        try:
+            pr = pa.portfolio_returns(rets, s.weights, rebalance=req.rebalance)
+        except ValueError as e:
+            results.append({"name": s.name, "error": str(e)})
+            continue
+        curve = pa.equity_curve(pr, req.initial)
+        stats = pa.stat_pack(pr, benchmark_rets=bench_rets, initial=req.initial)
+        # Windowed returns from the scenario's own equity curve.
+        win = pa.windowed_returns(curve, years=req.windows)
+        results.append({
+            "name": s.name,
+            "weights": pa.normalize_weights(s.weights),
+            "stats": stats,
+            "windows": win,
+            "curve": thin(curve),
+        })
+
+    # Benchmark curve + stats for the chart overlay.
+    bench_curve = pa.equity_curve(bench_rets, req.initial)
+    bench_stats = pa.stat_pack(bench_rets, benchmark_rets=bench_rets, initial=req.initial)
+
+    # Correlation matrix across all individual tickers used.
+    indiv = [t for t in tickers if t != req.benchmark]
+    corr = pa.correlation_matrix(rets[indiv].dropna(how="any")) if len(indiv) >= 2 else {}
+
+    return {
+        "as_of": str(prices.index[-1].date()),
+        "start": str(prices.index[0].date()),
+        "benchmark": req.benchmark,
+        "initial": req.initial,
+        "rebalance": req.rebalance,
+        "scenarios": results,
+        "benchmark_curve": thin(bench_curve),
+        "benchmark_stats": bench_stats,
+        "correlation": corr,
+    }
+
+
+# =====================================================================
+# Monte Carlo forward simulation  (NEW)
+# =====================================================================
+
+class MonteCarloRequest(BaseModel):
+    weights: Dict[str, float]
+    benchmark: str = "SPY"
+    period: str = Field(default="5y", description="history window to learn the return distribution")
+    horizon_days: int = Field(default=252, ge=5, le=252 * 10)
+    n_paths: int = Field(default=5000, ge=200, le=50_000)
+    method: str = Field(default="bootstrap", description="'bootstrap' or 'normal'")
+    initial: float = Field(default=100_000.0, gt=0)
+    rebalance: str = Field(default="none")
+
+
+@router.post("/montecarlo")
+def montecarlo(req: MonteCarloRequest) -> dict:
+    tickers = sorted(set(req.weights) | {req.benchmark})
+    prices = _fetch_prices(tickers, req.period)
+    rets = pa.daily_returns(prices)
+    try:
+        pr = pa.portfolio_returns(rets, req.weights, rebalance=req.rebalance)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    bench_rets = rets[req.benchmark].dropna() if req.benchmark in rets.columns else None
+
+    try:
+        mc = pa.monte_carlo(
+            pr, horizon_days=req.horizon_days, n_paths=req.n_paths,
+            method=req.method, initial=req.initial, benchmark_rets=bench_rets,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    mc["weights"] = pa.normalize_weights(req.weights)
+    mc["history_start"] = str(prices.index[0].date())
+    mc["history_end"] = str(prices.index[-1].date())
+    return mc
+
+
+# =====================================================================
+# Prefill helper — "your actual mix" from the live portfolio  (NEW)
+# =====================================================================
+
+@router.get("/portfolio-actual")
+def portfolio_actual() -> dict:
+    """Return current real positions as a weights dict (by live value), so the
+    UI can seed a 'your actual mix' scenario in one click."""
+    positions = storage.list_positions(include_closed=False)
+    weights: Dict[str, float] = {}
+    total = 0.0
+    # Pull live prices in one batch for valuation.
+    tickers = [p["ticker"] for p in positions]
+    px: Dict[str, float] = {}
+    if tickers:
+        try:
+            raw = yf.download(sorted(set(tickers)), period="5d", interval="1d",
+                              auto_adjust=True, progress=False)
+            close = raw["Close"] if isinstance(raw.columns, pd.MultiIndex) else raw
+            if isinstance(close, pd.Series):
+                close = close.to_frame(name=sorted(set(tickers))[0])
+            last = close.ffill().iloc[-1]
+            for t in set(tickers):
+                try:
+                    px[t] = float(last[t])
+                except Exception:
+                    px[t] = 0.0
+        except Exception:
+            px = {}
+    rows = []
+    for p in positions:
+        t = p["ticker"]
+        price = px.get(t) or 0.0
+        value = price * float(p["shares"]) if price else float(p.get("cost") or 0.0)
+        weights[t] = weights.get(t, 0.0) + value
+        total += value
+        rows.append({"ticker": t, "shares": p["shares"], "value": round(value, 2)})
+    if total > 0:
+        weights = {k: round(v / total, 4) for k, v in weights.items()}
+    return {"weights": weights, "positions": rows, "total_value": round(total, 2)}
