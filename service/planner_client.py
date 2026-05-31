@@ -180,6 +180,32 @@ def list_consolidated_holdings() -> Dict[str, Any]:
     return raw
 
 
+def list_lots() -> List[Dict[str, Any]]:
+    """Return open tax lots from the planner's InvestmentLot ledger.
+
+    Hits GET /api/investment-ledger/lots (paginated; we pull a large page).
+    Each item has symbol, cost_basis_per_share, remaining_shares /
+    shares_remaining_this_lot, purchase_date, term (long|short, precomputed
+    by the planner), plan_type, account_label, sale_date. The caller filters
+    to open lots (remaining > 0, no sale_date) via tax_analytics.lot_from_planner.
+
+    This is the lot-level cost basis the consolidated /summary view aggregates
+    away — required for HIFO and per-lot tax optimization.
+    """
+    raw = _get("/api/investment-ledger/lots?page_size=2000")
+    if isinstance(raw, dict):
+        items = raw.get("items")
+        if items is None:
+            items = raw.get("lots")
+        if isinstance(items, list):
+            return items
+    if isinstance(raw, list):
+        return raw
+    raise PlannerClientError(
+        f"unexpected /api/investment-ledger/lots shape: {type(raw)}"
+    )
+
+
 def healthcheck() -> Dict[str, Any]:
     """Lightweight probe — returns the (possibly anonymous) /api/health."""
     url = planner_url()
