@@ -68,6 +68,37 @@ def test_lot_from_planner_real_shape_and_derives_term():
     assert short_lot.term == "short"   # held <1 year
 
 
+def test_lot_from_planner_falls_back_to_acquired_minus_sold():
+    """Real planner rows leave shares_remaining_this_lot NULL and only fill
+    shares_acquired/shares_sold. The parser must fall back to acquired-sold,
+    or every open lot is rejected and the feature silently empties."""
+    lot = tx.lot_from_planner({
+        "symbol": "AAPL", "shares_remaining_this_lot": None,
+        "shares_acquired": 63.664, "shares_sold": None, "sale_date": None,
+        "cost_basis_per_share": 172.023, "purchase_date": "2026-01-30",
+        "term": None,
+    }, today_iso="2026-05-31")
+    assert lot is not None
+    assert lot.shares == pytest.approx(63.664)
+    assert lot.term == "short"  # bought 2026-01-30, <1yr
+
+    # A partially-sold lot: 100 acquired, 40 sold -> 60 remaining.
+    partial = tx.lot_from_planner({
+        "symbol": "X", "shares_remaining_this_lot": None,
+        "shares_acquired": 100, "shares_sold": 40, "sale_date": None,
+        "cost_basis_per_share": 10, "purchase_date": "2019-01-01",
+    })
+    assert partial.shares == pytest.approx(60)
+
+    # Fully sold -> rejected.
+    sold = tx.lot_from_planner({
+        "symbol": "X", "shares_remaining_this_lot": None,
+        "shares_acquired": 100, "shares_sold": 100, "sale_date": None,
+        "cost_basis_per_share": 10, "purchase_date": "2019-01-01",
+    })
+    assert sold is None
+
+
 def test_compute_term_boundary():
     # Exactly 365 days = still short; 366 = long.
     assert tx._compute_term("2025-05-31", today_iso="2026-05-31") == "short"  # 365 days

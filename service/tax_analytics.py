@@ -93,11 +93,19 @@ def lot_from_planner(d: dict, today_iso: str = "") -> Optional[Lot]:
     purchase date. (Getting either wrong silently zeroes the whole feature or
     understates short-term tax.)
     """
-    rem = d.get("shares_remaining")
+    # The planner often leaves shares_remaining_this_lot NULL and only fills
+    # shares_acquired/shares_sold, so fall back to acquired - sold (matching
+    # the planner's own _shares_remaining helper). Getting this wrong rejects
+    # every open lot and silently empties the whole feature.
+    rem = d.get("shares_remaining_this_lot")
+    if rem is None:
+        rem = d.get("shares_remaining")
     if rem is None:
         rem = d.get("remaining_shares")
     if rem is None:
-        rem = d.get("shares_remaining_this_lot")
+        acq = float(d.get("shares_acquired") or 0)
+        sold = float(d.get("shares_sold") or 0)
+        rem = acq - sold
     rem = float(rem or 0)
     if rem <= 0 or d.get("sale_date"):
         return None
