@@ -234,7 +234,7 @@ def list_sims() -> List[SimRow]:
     return [SimRow(**r) for r in storage.list_simulations()]
 
 
-@router.get("/{sid}", response_model=SimDetail)
+@router.get("/{sid:int}", response_model=SimDetail)
 def get_sim(sid: int) -> SimDetail:
     row = storage.get_simulation(sid)
     if not row:
@@ -250,7 +250,7 @@ def get_sim(sid: int) -> SimDetail:
     )
 
 
-@router.delete("/{sid}")
+@router.delete("/{sid:int}")
 def delete_sim(sid: int) -> dict:
     storage.delete_simulation(sid)
     return {"deleted": sid}
