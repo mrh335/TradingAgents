@@ -53,6 +53,7 @@ from service.routers import (
     settings,
     sidecars as sidecars_router,
     simulation,
+    tax,
     streaming,
     tickers as tickers_router,
     tokens as tokens_router,
@@ -174,6 +175,7 @@ app.include_router(paper.router)
 app.include_router(calendar_router.router)
 app.include_router(news_feed.router)
 app.include_router(simulation.router)
+app.include_router(tax.router)
 app.include_router(planner.router)
 app.include_router(sidecars_router.router)
 app.include_router(run_queue_router.router)
