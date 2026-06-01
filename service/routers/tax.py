@@ -38,14 +38,53 @@ def _rates(preset: Optional[str], rates: Optional[Dict[str, float]]) -> tx.TaxRa
 
 
 def _load_lots() -> List[tx.Lot]:
+    """Open lots, RECONCILED to the planner's authoritative consolidated book.
+
+    The raw lot ledger over-counts (historical Purchased/Split/Transfer rows,
+    null shares_remaining) — naively it shows ~8,338 AAPL sh / $2.74M and
+    phantom symbols. The consolidated /summary nets all that to the real held
+    shares + total cost per symbol. We keep the lot-level basis distribution
+    (for HIFO + term) but rescale each symbol to its authoritative totals, and
+    DROP symbols the consolidated book no longer holds.
+    """
     if not planner_client.is_configured():
         raise HTTPException(status_code=412, detail="Planner not configured (PLANNER_API_URL / PLANNER_API_KEY).")
     try:
         raw = planner_client.list_lots()
     except planner_client.PlannerClientError as e:
         raise HTTPException(status_code=502, detail=str(e))
-    lots = [tx.lot_from_planner(d) for d in raw]
-    return [l for l in lots if l is not None]
+
+    parsed = [l for l in (tx.lot_from_planner(d) for d in raw) if l is not None]
+
+    # Authoritative current holdings (symbol -> shares, total_cost_basis).
+    authoritative: Dict[str, Dict[str, float]] = {}
+    try:
+        consolidated = planner_client.list_consolidated_holdings().get("holdings") or []
+        for h in consolidated:
+            sym = (h.get("symbol") or "").upper()
+            sh = float(h.get("shares") or 0)
+            if sym and sh > 0:
+                authoritative[sym] = {
+                    "shares": sh,
+                    "cost": float(h.get("total_cost_basis") or 0) or None,
+                }
+    except planner_client.PlannerClientError:
+        # If the consolidated view is unavailable, fall back to raw lots
+        # (better to show over-counted data than nothing) but flag via logs.
+        return parsed
+
+    grouped = _by_symbol(parsed)
+    reconciled: List[tx.Lot] = []
+    for sym, lots in grouped.items():
+        auth = authoritative.get(sym)
+        if not auth:
+            # Symbol not in the current consolidated book -> not actually held
+            # (e.g. fully-sold PYPL still present as historical lots). Drop it.
+            continue
+        reconciled.extend(
+            tx.reconcile_lots_to_totals(lots, auth["shares"], auth.get("cost"))
+        )
+    return reconciled
 
 
 def _prices(symbols: List[str]) -> Dict[str, float]:
