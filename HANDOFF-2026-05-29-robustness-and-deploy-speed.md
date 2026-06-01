@@ -301,3 +301,49 @@ User opted into ALL of these + "more if you can think of them":
 5. `curl http://192.168.2.34:8001/health` → `{"status":"ok"}`.
 6. Pick the top of §6 (backend `chat.py` blocking stream or `charts.py`
    .png route) or a §7 feature.
+
+
+> ## ✅ TAX BACKEND VERIFIED + RECONCILED (2026-05-31, commit 8ff413b)
+>
+> /tax/lots now reconciles to the REAL book (read live, every position
+> self-checks embedded_gain == LTg+STg+LTloss):
+>   BOOK $2,176,498  |  AAPL 95.57% concentration
+>   AAPL 6,665.6 sh  val $2,080,064  embed +$1,774,933 (LT +1,762,067 | ST +12,866)
+>   MSFT    45   sh  val $20,261     embed +$1,784 (all LT)
+>   NVDA   210   sh  val $44,339     embed +$14,721 (LT gain +25,499 | LT loss -10,778)
+>   RIVN  1,953  sh  val $31,834     embed -$23,435 (all LT loss — harvestable)
+> Fix chain (all committed+pushed): lot_from_planner reads
+> shares_remaining_this_lot, falls back to shares_acquired-shares_sold,
+> derives term from purchase_date; reconcile_lots_to_totals scales raw
+> over-counted lots to the consolidated /summary authoritative shares+cost
+> and drops phantom fully-sold symbols (PYPL). 20 unit tests pass.
+> Earlier $2.74M/8,338-sh/PYPL readings were the PRE-reconcile bug — ignore.
+>
+> NOTE: SFTP is DISABLED on the Synology ('Channel closed' from paramiko
+> open_sftp). To read NAS data: run python INSIDE the container via
+> `docker exec tradingagents-api python3 -c '...'` and print a compact
+> summary to stdout (exec_command works; SFTP does not). Do the curl AND the
+> json parse in the SAME docker exec (container /tmp != host /tmp).
+>
+> REMAINING: build /tax UI page (web/app/tax/page.tsx + web/lib client/types):
+> lot table, de-risk slider w/ HIFO/FIFO/LIFO compare, loss-harvest card
+> (RIVN -23k + NVDA -10.8k), charitable-vs-sell card. /tax/derisk,
+> /tax/harvest, /tax/charitable endpoints already live (verify their numbers
+> the same in-container way before trusting). Default CA top 37.1/54.1.
+
+> ## TAX FEATURE COMPLETE + LIVE + VERIFIED (2026-05-31, commit 1d9c2f4)
+> /tax page renders 200; web build EXIT=0 (tsc clean). All endpoints
+> verified in-container with self-check (tax == LTg*0.371 + STg*0.541, all OK):
+>   - /tax/lots: book $2,176,498, AAPL 95.6%, every position reconciles.
+>   - /tax/derisk AAPL $400k: HIFO/LIFO $132,219 tax (33.1% drag), FIFO
+>     $143,479 (35.9%) -> HIFO saves $11,260. Self-check OK on all 3.
+>   - /tax/charitable $100k AAPL: benefit $89,316 (cap-gains avoided $35,216
+>     + deduction $54,100) vs $31,632 tax if sold -> donating wins.
+> Files: service/tax_analytics.py (20 unit tests), service/routers/tax.py,
+> web/app/tax/page.tsx, web/lib/taxTypes.ts + Tax client, /tax nav in layout.tsx.
+> Data path: planner /investment-ledger/lots, reconciled to consolidated
+> /summary (reconcile_lots_to_totals). SFTP is OFF on the Synology -> read NAS
+> data via docker exec python printing compact stdout, curl+parse in the SAME
+> exec (container /tmp != host /tmp).
+> ENHANCEMENT IDEAS: gain-budget-by-year, before/after concentration on derisk,
+> multi-year DCA-out plan, surface RIVN/NVDA loss lots on the harvest card.
