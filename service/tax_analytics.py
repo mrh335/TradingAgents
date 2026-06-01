@@ -122,6 +122,51 @@ def lot_from_planner(d: dict, today_iso: str = "") -> Optional[Lot]:
     )
 
 
+def reconcile_lots_to_totals(
+    lots: List[Lot], authoritative_shares: float, authoritative_cost: Optional[float] = None,
+) -> List[Lot]:
+    """Scale a symbol's lots so their shares sum to the planner's authoritative
+    current share count (from the consolidated /summary view).
+
+    WHY: the raw lot ledger mixes Purchased / Sold / Split / Transfer rows and
+    often leaves shares_remaining null, so naively summing acquisition rows
+    over-counts a position (e.g. 8,338 AAPL sh of historical lots vs 6,665
+    actually held). The consolidated /summary nets all of that correctly, but
+    only gives a blended basis. So we keep the *shape* of the lot distribution
+    (relative sizes, per-lot basis, acquired dates -> drives HIFO + term) and
+    rescale it to the *authoritative* total. The result reconciles to the real
+    book while preserving lot-level tax optimization.
+
+    If authoritative_cost is given and the scaled cost basis drifts from it,
+    each lot's basis is nudged by a uniform factor so total cost matches too —
+    keeping per-share gains honest against the real embedded gain.
+    """
+    held = [l for l in lots if l.shares > 0]
+    raw_total = sum(l.shares for l in held)
+    if raw_total <= 0 or authoritative_shares <= 0:
+        return []
+    share_factor = authoritative_shares / raw_total
+    scaled = [
+        Lot(
+            symbol=l.symbol,
+            shares=l.shares * share_factor,
+            cost_basis_per_share=l.cost_basis_per_share,
+            acquired_date=l.acquired_date,
+            term=l.term,
+            account=l.account,
+            plan_type=l.plan_type,
+        )
+        for l in held
+    ]
+    if authoritative_cost and authoritative_cost > 0:
+        scaled_cost = sum(l.shares * l.cost_basis_per_share for l in scaled)
+        if scaled_cost > 0:
+            cost_factor = authoritative_cost / scaled_cost
+            for l in scaled:
+                l.cost_basis_per_share *= cost_factor
+    return scaled
+
+
 def _sort_key(method: str, price: float):
     m = method.lower()
     if m in ("hifo", "mingain"):   # highest cost first -> least gain

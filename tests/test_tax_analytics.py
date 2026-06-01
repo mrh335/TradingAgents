@@ -99,6 +99,39 @@ def test_lot_from_planner_falls_back_to_acquired_minus_sold():
     assert sold is None
 
 
+def test_reconcile_scales_shares_to_authoritative_total():
+    """Raw lots over-count (historical Purchased rows); reconcile scales them
+    to the planner's authoritative current shares while preserving the basis
+    distribution that drives HIFO/term."""
+    raw = [
+        Lot("AAPL", 4000, 50.0, "2019-01-01", "long"),
+        Lot("AAPL", 3000, 120.0, "2021-06-01", "long"),
+        Lot("AAPL", 1338, 180.0, "2024-02-01", "short"),
+    ]  # raw sum 8338, but real held = 6665.589
+    scaled = tx.reconcile_lots_to_totals(raw, authoritative_shares=6665.589)
+    assert sum(l.shares for l in scaled) == pytest.approx(6665.589, abs=0.01)
+    # Relative sizes preserved.
+    assert scaled[0].shares / scaled[1].shares == pytest.approx(4000 / 3000, rel=1e-6)
+    # Per-share basis unchanged when no cost target given.
+    assert scaled[0].cost_basis_per_share == 50.0
+
+
+def test_reconcile_matches_authoritative_cost_when_given():
+    raw = [
+        Lot("AAPL", 4000, 50.0, "2019-01-01", "long"),
+        Lot("AAPL", 3000, 120.0, "2021-06-01", "long"),
+    ]
+    scaled = tx.reconcile_lots_to_totals(
+        raw, authoritative_shares=6665.589, authoritative_cost=305131.0)
+    assert sum(l.shares for l in scaled) == pytest.approx(6665.589, abs=0.01)
+    assert sum(l.shares * l.cost_basis_per_share for l in scaled) == pytest.approx(305131.0, abs=1)
+
+
+def test_reconcile_empty_or_zero_safe():
+    assert tx.reconcile_lots_to_totals([], 100) == []
+    assert tx.reconcile_lots_to_totals([Lot("X", 10, 5, "2020-01-01", "long")], 0) == []
+
+
 def test_compute_term_boundary():
     # Exactly 365 days = still short; 366 = long.
     assert tx._compute_term("2025-05-31", today_iso="2026-05-31") == "short"  # 365 days
