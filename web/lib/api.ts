@@ -32,6 +32,10 @@ import type {
   BacktestRequest, BacktestResponse,
   MonteCarloRequest, MonteCarloResponse, PortfolioActual,
 } from "./simTypes";
+import type {
+  TaxLotsResponse, DeriskRequest, DeriskResponse,
+  HarvestResponse, CharitableRequest, CharitableResponse,
+} from "./taxTypes";
 
 // Two ways the analysis can run. "incremental" injects the memory-log
 // past_context into the Portfolio Manager prompt (default, efficient).
@@ -401,6 +405,17 @@ export const Simulation = {
     request<MonteCarloResponse>("/sim/montecarlo", { method: "POST", body: JSON.stringify(req) }),
   // Seed "your actual mix" from live positions (weights by value).
   portfolioActual: () => request<PortfolioActual>("/sim/portfolio-actual"),
+};
+
+// ---- Tax-aware de-risking (/tax) --------------------------------------
+export const Tax = {
+  lots: () => request<TaxLotsResponse>("/tax/lots"),
+  derisk: (req: DeriskRequest) =>
+    request<DeriskResponse>("/tax/derisk", { method: "POST", body: JSON.stringify(req) }),
+  harvest: (preset = "ca_top") =>
+    request<HarvestResponse>(`/tax/harvest?rate_preset=${encodeURIComponent(preset)}`),
+  charitable: (req: CharitableRequest) =>
+    request<CharitableResponse>("/tax/charitable", { method: "POST", body: JSON.stringify(req) }),
 };
 
 // ---- Run queue (Claude Desktop / Claude Code worker handoff) ----------
