@@ -16,6 +16,10 @@ import { useEffect, useState } from "react";
 type NavItem = { href: string; label: string };
 type NavSection = { id: string; title: string; items: NavItem[] };
 
+// Sibling self-hosted app on the LAN — the personal Financial Planner.
+// External origin, so it's a plain <a> (new tab), not a Next.js <Link>.
+const FINANCE_APP_URL = "http://192.168.2.34:8765";
+
 // Always-visible quick links. "Past analyses" pinned near the top per request.
 const PINNED: NavItem[] = [
   { href: "/", label: "Home" },
@@ -176,6 +180,20 @@ export function Sidebar() {
             </div>
           );
         })}
+
+        {/* Jump to the sibling Financial Planner app (external, new tab). */}
+        <div className="pt-3 mt-2 border-t border-border">
+          <a
+            href={FINANCE_APP_URL}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="flex items-center justify-between px-2 py-1.5 rounded text-sm hover:bg-surface transition-colors"
+            title="Open the Financial Planner app in a new tab"
+          >
+            <span>💰 Finance App</span>
+            <span className="text-muted text-xs">↗</span>
+          </a>
+        </div>
       </nav>
     </aside>
   );
