@@ -232,3 +232,7 @@ web/.next/
 web/node_modules/
 web/out/
 web/next-env.d.ts.bak
+
+# Local session/handoff docs — may contain real financial figures; keep out of git
+HANDOFF-*.md
+io_tokens.md
